@@ -1,7 +1,11 @@
 """Tests for the Herdr JSON boundary and partial-inventory behavior."""
 
+from __future__ import annotations
+
+import os
 import subprocess
 import unittest
+from unittest.mock import patch
 
 from herdrnav.contracts import SessionStatus
 from herdrnav.herdr import HerdrClient, HerdrError
@@ -11,6 +15,7 @@ def completed(payload: str) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["herdr"], 0, payload, "")
 
 
+@patch.dict(os.environ, {"HERDR_SOCKET_PATH": ""})
 class HerdrClientTests(unittest.TestCase):
     def test_normalizes_session_and_stable_identity(self) -> None:
         payload = '{"sessions": [{"name": "work", "socket_path": "/work.sock", "running": true}]}'

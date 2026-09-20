@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "herdr-nav"
+version = "0.1.0"
+description = "A terminal-native operator dashboard for Herdr"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Kaifeng Gao", email = "87157271+Kaifeng-Gao@users.noreply.github.com" },
+]
+keywords = ["agents", "herdr", "terminal", "tui"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console :: Curses",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Kaifeng-Gao/herdr-nav"
+Issues = "https://github.com/Kaifeng-Gao/herdr-nav/issues"
+Repository = "https://github.com/Kaifeng-Gao/herdr-nav.git"
+
+[tool.setuptools.packages.find]
+include = ["herdrnav*"]
+
+[tool.setuptools.package-data]
+herdrnav = ["py.typed"]

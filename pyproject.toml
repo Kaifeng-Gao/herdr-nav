@@ -28,6 +28,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.scripts]
+herdr-nav = "herdrnav.app:main"
+
 [project.urls]
 Homepage = "https://github.com/Kaifeng-Gao/herdr-nav"
 Issues = "https://github.com/Kaifeng-Gao/herdr-nav/issues"

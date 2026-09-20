@@ -31,3 +31,11 @@ class Frame:
     height: int
     full: bool
     data: bytes
+
+
+@dataclass(frozen=True)
+class Inventory:
+    """Sessions obtained from healthy servers and errors from unavailable ones."""
+
+    sessions: tuple[Session, ...]
+    errors: tuple[str, ...]

@@ -16,7 +16,7 @@ def session(**changes: str) -> Session:
 
 
 class CatalogTests(unittest.TestCase):
-    def test_sorts_by_status_then_stable_display_fields(self) -> None:
+    def test_sorts_by_stable_display_fields(self) -> None:
         sessions = [
             session(terminal_id="b", title="Zulu"),
             session(terminal_id="c", title="Alpha", status="working"),

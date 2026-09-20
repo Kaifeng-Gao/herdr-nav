@@ -3,7 +3,7 @@
 import subprocess
 import unittest
 
-from herdrnav.herdr import HerdrClient
+from herdrnav.herdr import HerdrClient, HerdrError
 
 
 def completed(payload: str) -> subprocess.CompletedProcess[str]:
@@ -47,3 +47,11 @@ class HerdrClientTests(unittest.TestCase):
         ).inventory()
         self.assertEqual([item.server_name for item in inventory.sessions], ["good"])
         self.assertEqual(inventory.errors, ("bad: agent.list response is missing an agents list",))
+
+    def test_rejects_a_running_server_without_a_stable_address(self) -> None:
+        payload = '{"sessions": [{"name": "work", "running": true}]}'
+        client = HerdrClient("herdr", run_command=lambda _command: completed(payload))
+        with self.assertRaisesRegex(
+            HerdrError, "running session record is missing name or socket_path"
+        ):
+            client.inventory()

@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .contracts import Session
+from .contracts import Inventory, Session
 
 JsonObject = Mapping[str, Any]
 RunCommand = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
@@ -16,14 +16,6 @@ RunCommand = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 class HerdrError(Exception):
     """A Herdr operation could not be completed."""
-
-
-@dataclass(frozen=True)
-class Inventory:
-    """Sessions obtained from healthy servers and errors from unavailable ones."""
-
-    sessions: tuple[Session, ...]
-    errors: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -70,6 +62,16 @@ def _session(record: JsonObject, server: _Server) -> Session:
         ),
         cwd=_string(record, "foreground_cwd") or _string(record, "cwd"),
     )
+
+
+def _server(record: JsonObject) -> _Server | None:
+    if record.get("running") is not True:
+        return None
+    name = _string(record, "name")
+    socket_path = _string(record, "socket_path")
+    if not name or not socket_path:
+        raise HerdrError("running session record is missing name or socket_path")
+    return _Server(name, socket_path)
 
 
 def _request(socket_path: str, method: str) -> JsonObject:
@@ -142,20 +144,15 @@ class HerdrClient:
             raise HerdrError(str(error)) from error
         if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
             raise HerdrError("session list response is missing a sessions list")
-        servers = [
-            _Server(_string(record, "name"), _string(record, "socket_path"))
-            for record in payload["sessions"]
-            if (
-                isinstance(record, dict)
-                and record.get("running") is True
-                and _string(record, "name")
-                and _string(record, "socket_path")
-                and (
-                    self._server_name is None
-                    or _string(record, "name") == self._server_name
-                )
-            )
-        ]
+        servers: list[_Server] = []
+        for record in payload["sessions"]:
+            if not isinstance(record, dict):
+                raise HerdrError("session list response contains a non-object session")
+            server = _server(record)
+            if server is not None and (
+                self._server_name is None or server.name == self._server_name
+            ):
+                servers.append(server)
         inherited_socket = os.environ.get("HERDR_SOCKET_PATH")
         if (
             inherited_socket

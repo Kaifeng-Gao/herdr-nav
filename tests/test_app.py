@@ -4,8 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from herdrnav.app import main
-from herdrnav.contracts import Session
-from herdrnav.herdr import Inventory
+from herdrnav.contracts import Inventory, Session
 
 
 class AppTests(unittest.TestCase):

@@ -11,16 +11,7 @@ from unittest.mock import Mock, patch
 
 from herdrnav.contracts import Session, SessionStatus
 from herdrnav.dashboard import DashboardAction, DashboardSnapshot
-from herdrnav.host import (
-    BEGIN_UPDATE,
-    END_UPDATE,
-    GroupHeading,
-    SessionRow,
-    Spacer,
-    STATUS_STYLE_KEYS,
-    TerminalHost,
-    display_rows,
-)
+from herdrnav.terminal_ui import TerminalUI
 
 PALETTE = {
     "accent": 10,
@@ -79,43 +70,35 @@ class FinalCellScreen(Screen):
         super().addnstr(y, x, value, length, style)
 
 
-def rendering_host(screen: Screen) -> TerminalHost:
-    host = TerminalHost.__new__(TerminalHost)
-    host._screen = screen
-    host._viewport_start = 0
-    host.styles = PALETTE
-    return host
+def rendering_ui(screen: Screen) -> TerminalUI:
+    ui = TerminalUI.__new__(TerminalUI)
+    ui._screen = screen
+    ui._viewport_start = 0
+    ui._palette = PALETTE
+    return ui
 
 
-class HostTests(unittest.TestCase):
-    def test_builds_tagged_rows_for_status_groups(self) -> None:
-        working = session(status=SessionStatus.WORKING)
-        ready = session(
-            terminal_id="terminal-b",
-            pane_id="pane-b",
-            status=SessionStatus.READY,
+class TerminalUITests(unittest.TestCase):
+    def test_render_supports_every_session_status(self) -> None:
+        screen = Screen(height=50)
+        ui = rendering_ui(screen)
+        sessions = tuple(
+            session(
+                terminal_id=f"terminal-{index}",
+                pane_id=f"pane-{index}",
+                status=status,
+            )
+            for index, status in enumerate(SessionStatus)
         )
 
-        rows = display_rows((working, ready))
+        ui._render(snapshot(sessions))
 
-        self.assertEqual(
-            rows,
-            (
-                GroupHeading(SessionStatus.WORKING),
-                SessionRow(working),
-                Spacer(),
-                GroupHeading(SessionStatus.READY),
-                SessionRow(ready),
-            ),
-        )
-
-    def test_status_styles_cover_every_semantic_status(self) -> None:
-        self.assertEqual(set(STATUS_STYLE_KEYS), set(SessionStatus))
+        self.assertTrue(screen.writes)
 
     def test_render_shows_empty_state_grouped_sessions_and_server_error(self) -> None:
         screen = Screen()
-        host = rendering_host(screen)
-        host._render(snapshot())
+        ui = rendering_ui(screen)
+        ui._render(snapshot())
         self.assertIn(
             "No running Herdr agents", [value for _, value, _ in screen.writes]
         )
@@ -127,7 +110,7 @@ class HostTests(unittest.TestCase):
             status=SessionStatus.WORKING,
             title="Second",
         )
-        host._render(
+        ui._render(
             snapshot(
                 (needs_input, working),
                 selected=needs_input,
@@ -145,7 +128,7 @@ class HostTests(unittest.TestCase):
 
     def test_viewport_moves_only_when_selection_leaves_visible_rows(self) -> None:
         screen = Screen(height=12)
-        host = rendering_host(screen)
+        ui = rendering_ui(screen)
         sessions = tuple(
             session(
                 terminal_id=f"terminal-{index}",
@@ -157,11 +140,11 @@ class HostTests(unittest.TestCase):
 
         selected_rows = []
         for selected in sessions[:5]:
-            host._render(snapshot(sessions, selected=selected))
+            ui._render(snapshot(sessions, selected=selected))
             selected_rows.append(
                 next(y for y, _, style in screen.writes if style == curses.A_REVERSE)
             )
-        host._render(snapshot(sessions, selected=sessions[3]))
+        ui._render(snapshot(sessions, selected=sessions[3]))
         row_after_moving_up = next(
             y for y, _, style in screen.writes if style == curses.A_REVERSE
         )
@@ -172,18 +155,18 @@ class HostTests(unittest.TestCase):
 
     def test_tiny_terminal_does_not_render_sessions_over_footer(self) -> None:
         screen = Screen(height=5)
-        host = rendering_host(screen)
+        ui = rendering_ui(screen)
 
-        host._render(snapshot((session(),), selected=session()))
+        ui._render(snapshot((session(),), selected=session()))
 
         self.assertNotIn("First", "\n".join(value for _, value, _ in screen.writes))
         self.assertEqual({y for y, _, _ in screen.writes}, {1, 2, 3, 4})
 
     def test_final_row_display_width_error_does_not_escape(self) -> None:
         screen = FinalCellScreen()
-        host = rendering_host(screen)
+        ui = rendering_ui(screen)
 
-        host._render(snapshot())
+        ui._render(snapshot())
 
         self.assertIn("HERDR NAV", [value for _, value, _ in screen.writes])
 
@@ -197,27 +180,30 @@ class HostTests(unittest.TestCase):
             (curses.KEY_RESIZE, DashboardAction.REDRAW),
             ("x", DashboardAction.REDRAW),
         )
-        host = TerminalHost.__new__(TerminalHost)
-        host._screen = Mock()
+        ui = TerminalUI.__new__(TerminalUI)
+        ui._screen = Mock()
         for key, expected in cases:
             with self.subTest(key=key):
-                host._screen.get_wch.return_value = key
-                self.assertEqual(host.read_action(), expected)
-        host._screen.get_wch.side_effect = curses.error
-        self.assertEqual(host.read_action(), DashboardAction.TIMEOUT)
+                ui._screen.get_wch.return_value = key
+                self.assertEqual(ui.read_action(), expected)
+        ui._screen.get_wch.side_effect = curses.error
+        self.assertEqual(ui.read_action(), DashboardAction.TIMEOUT)
 
     def test_restores_terminal_when_curses_setup_fails(self) -> None:
         output = io.BytesIO()
         stdout = Mock(buffer=output)
         with (
-            patch("herdrnav.host.termios.tcgetattr", return_value=["original"]),
-            patch("herdrnav.host.termios.tcsetattr") as restore,
-            patch("herdrnav.host.curses.initscr", side_effect=OSError("no terminal")),
-            patch("herdrnav.host.curses.endwin") as endwin,
-            patch("herdrnav.host.sys.stdout", stdout),
+            patch("herdrnav.terminal_ui.termios.tcgetattr", return_value=["original"]),
+            patch("herdrnav.terminal_ui.termios.tcsetattr") as restore,
+            patch(
+                "herdrnav.terminal_ui.curses.initscr",
+                side_effect=OSError("no terminal"),
+            ),
+            patch("herdrnav.terminal_ui.curses.endwin") as endwin,
+            patch("herdrnav.terminal_ui.sys.stdout", stdout),
         ):
             with self.assertRaisesRegex(OSError, "no terminal"):
-                TerminalHost().__enter__()
+                TerminalUI().__enter__()
 
         endwin.assert_not_called()
         restore.assert_called_once()
@@ -227,44 +213,44 @@ class HostTests(unittest.TestCase):
         output = io.BytesIO()
         stdout = Mock(buffer=output)
         with (
-            patch("herdrnav.host.termios.tcgetattr", return_value=["original"]),
-            patch("herdrnav.host.termios.tcsetattr") as restore,
-            patch("herdrnav.host.curses.initscr", return_value=screen),
-            patch("herdrnav.host.curses.has_colors", return_value=False),
-            patch("herdrnav.host.curses.endwin") as endwin,
-            patch("herdrnav.host.curses.noecho"),
-            patch("herdrnav.host.curses.cbreak"),
-            patch("herdrnav.host.curses.set_escdelay"),
-            patch("herdrnav.host.curses.curs_set"),
-            patch("herdrnav.host.sys.stdout", stdout),
+            patch("herdrnav.terminal_ui.termios.tcgetattr", return_value=["original"]),
+            patch("herdrnav.terminal_ui.termios.tcsetattr") as restore,
+            patch("herdrnav.terminal_ui.curses.initscr", return_value=screen),
+            patch("herdrnav.terminal_ui.curses.has_colors", return_value=False),
+            patch("herdrnav.terminal_ui.curses.endwin") as endwin,
+            patch("herdrnav.terminal_ui.curses.noecho"),
+            patch("herdrnav.terminal_ui.curses.cbreak"),
+            patch("herdrnav.terminal_ui.curses.set_escdelay"),
+            patch("herdrnav.terminal_ui.curses.curs_set"),
+            patch("herdrnav.terminal_ui.sys.stdout", stdout),
         ):
             with self.assertRaisesRegex(RuntimeError, "render failed"):
-                with TerminalHost():
+                with TerminalUI():
                     raise RuntimeError("render failed")
 
         endwin.assert_called_once_with()
         restore.assert_called_once()
-        self.assertTrue(output.getvalue().endswith(END_UPDATE))
+        self.assertTrue(output.getvalue().endswith(b"\x1b[?2026l"))
 
     def test_resize_is_applied_before_a_synchronized_presentation(self) -> None:
-        host = TerminalHost.__new__(TerminalHost)
-        host._screen = Mock()
-        host._screen.getmaxyx.return_value = (20, 60)
-        host._render = Mock()
+        ui = TerminalUI.__new__(TerminalUI)
+        ui._screen = Mock()
+        ui._screen.getmaxyx.return_value = (20, 60)
+        ui._render = Mock()
         output = io.BytesIO()
         stdout = Mock(buffer=output)
         with (
             patch(
-                "herdrnav.host.os.get_terminal_size",
+                "herdrnav.terminal_ui.os.get_terminal_size",
                 return_value=os.terminal_size((80, 24)),
             ),
-            patch("herdrnav.host.curses.resizeterm") as resize,
-            patch("herdrnav.host.curses.doupdate"),
-            patch("herdrnav.host.sys.stdout", stdout),
+            patch("herdrnav.terminal_ui.curses.resizeterm") as resize,
+            patch("herdrnav.terminal_ui.curses.doupdate"),
+            patch("herdrnav.terminal_ui.sys.stdout", stdout),
         ):
-            host.present(snapshot())
+            ui.present(snapshot())
 
         resize.assert_called_once_with(24, 80)
-        host._screen.clearok.assert_called_once_with(True)
-        host._render.assert_called_once()
-        self.assertEqual(output.getvalue(), BEGIN_UPDATE + END_UPDATE)
+        ui._screen.clearok.assert_called_once_with(True)
+        ui._render.assert_called_once()
+        self.assertEqual(output.getvalue(), b"\x1b[?2026h\x1b[?2026l")

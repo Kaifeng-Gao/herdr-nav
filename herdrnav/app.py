@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from .catalog import sort_sessions
 from .dashboard import Dashboard
 from .herdr import HerdrClient, HerdrError
-from .host import TerminalHost
+from .terminal_ui import TerminalUI
 
 
 def _binary() -> str | None:
@@ -44,8 +44,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
             return 1
         try:
-            with TerminalHost() as host:
-                Dashboard(host, client).run()
+            with TerminalUI() as ui:
+                Dashboard(ui, client).run()
         except KeyboardInterrupt:
             return 0
         except (HerdrError, OSError, curses.error) as dashboard_error:

@@ -14,17 +14,17 @@ from typing import Literal, TypeAlias
 from .contracts import Session, SessionStatus
 from .dashboard import DashboardAction, DashboardSnapshot
 
-BEGIN_UPDATE = b"\x1b[?2026h"
-END_UPDATE = b"\x1b[?2026l"
-RESET_MODES = b"\x1b[0m\x1b[?25h"
+_BEGIN_UPDATE = b"\x1b[?2026h"
+_END_UPDATE = b"\x1b[?2026l"
+_RESET_MODES = b"\x1b[0m\x1b[?25h"
 
-TITLE_ROW = 1
-SUMMARY_ROW = 2
-CONTENT_START_ROW = 4
-FOOTER_HEIGHT = 3
+_TITLE_ROW = 1
+_SUMMARY_ROW = 2
+_CONTENT_START_ROW = 4
+_FOOTER_HEIGHT = 3
 
-PaletteKey = Literal["accent", "alert", "success", "muted", "neutral"]
-STATUS_LABELS = {
+_PaletteKey = Literal["accent", "alert", "success", "muted", "neutral"]
+_STATUS_LABELS = {
     SessionStatus.NEEDS_INPUT: "Needs input",
     SessionStatus.WORKING: "Working",
     SessionStatus.READY: "Ready",
@@ -32,7 +32,7 @@ STATUS_LABELS = {
     SessionStatus.STARTING: "Starting",
     SessionStatus.UNKNOWN: "Unknown",
 }
-STATUS_STYLE_KEYS: dict[SessionStatus, PaletteKey] = {
+_STATUS_STYLE_KEYS: dict[SessionStatus, _PaletteKey] = {
     SessionStatus.NEEDS_INPUT: "alert",
     SessionStatus.WORKING: "accent",
     SessionStatus.READY: "neutral",
@@ -43,38 +43,38 @@ STATUS_STYLE_KEYS: dict[SessionStatus, PaletteKey] = {
 
 
 @dataclass(frozen=True)
-class GroupHeading:
+class _GroupHeading:
     """A status heading in the flattened dashboard row list."""
 
     status: SessionStatus
 
 
 @dataclass(frozen=True)
-class Spacer:
+class _Spacer:
     """A visual separator between status groups."""
 
 
 @dataclass(frozen=True)
-class SessionRow:
+class _SessionRow:
     """One selectable session in the flattened dashboard row list."""
 
     session: Session
 
 
-DisplayRow: TypeAlias = GroupHeading | Spacer | SessionRow
+_DisplayRow: TypeAlias = _GroupHeading | _Spacer | _SessionRow
 
 
-def display_rows(sessions: Iterable[Session]) -> tuple[DisplayRow, ...]:
+def _display_rows(sessions: Iterable[Session]) -> tuple[_DisplayRow, ...]:
     """Build tagged rows from sessions already sorted for display."""
-    rows: list[DisplayRow] = []
+    rows: list[_DisplayRow] = []
     previous_status: SessionStatus | None = None
     for session in sessions:
         if session.status is not previous_status:
             if rows:
-                rows.append(Spacer())
-            rows.append(GroupHeading(session.status))
+                rows.append(_Spacer())
+            rows.append(_GroupHeading(session.status))
             previous_status = session.status
-        rows.append(SessionRow(session))
+        rows.append(_SessionRow(session))
     return tuple(rows)
 
 
@@ -97,12 +97,12 @@ def _text(
             pass
 
 
-class TerminalHost:
+class TerminalUI:
     """Present the dashboard while owning and restoring the physical terminal."""
 
-    styles: dict[PaletteKey, int]
+    _palette: dict[_PaletteKey, int]
 
-    def __enter__(self) -> TerminalHost:
+    def __enter__(self) -> TerminalUI:
         self._original = termios.tcgetattr(0)
         self._curses_started = False
         self._viewport_start = 0
@@ -115,7 +115,7 @@ class TerminalHost:
             self._screen.keypad(True)
             self._screen.timeout(80)
             curses.curs_set(0)
-            self.styles = {
+            self._palette = {
                 "accent": curses.A_BOLD,
                 "alert": curses.A_BOLD,
                 "success": curses.A_BOLD,
@@ -125,21 +125,21 @@ class TerminalHost:
             if curses.has_colors():
                 curses.start_color()
                 curses.use_default_colors()
-                colors: tuple[tuple[PaletteKey, int], ...] = (
+                colors: tuple[tuple[_PaletteKey, int], ...] = (
                     ("accent", curses.COLOR_CYAN),
                     ("alert", curses.COLOR_YELLOW),
                     ("success", curses.COLOR_GREEN),
                 )
                 for number, (name, color) in enumerate(colors, 1):
                     curses.init_pair(number, color, -1)
-                    self.styles[name] = curses.color_pair(number)
+                    self._palette[name] = curses.color_pair(number)
         except BaseException:
             self._restore()
             raise
         return self
 
     @property
-    def size(self) -> tuple[int, int]:
+    def _terminal_size(self) -> tuple[int, int]:
         """Return terminal columns and rows."""
         size = os.get_terminal_size(sys.stdout.fileno())
         return size.columns, size.lines
@@ -164,26 +164,26 @@ class TerminalHost:
 
     def present(self, snapshot: DashboardSnapshot) -> None:
         """Resize and atomically present one dashboard snapshot."""
-        width, height = self.size
+        width, height = self._terminal_size
         if self._screen.getmaxyx() != (height, width):
             curses.resizeterm(height, width)
             self._screen.clearok(True)
-        sys.stdout.buffer.write(BEGIN_UPDATE)
+        sys.stdout.buffer.write(_BEGIN_UPDATE)
         sys.stdout.buffer.flush()
         try:
             self._render(snapshot)
             self._screen.noutrefresh()
             curses.doupdate()
         finally:
-            sys.stdout.buffer.write(END_UPDATE)
+            sys.stdout.buffer.write(_END_UPDATE)
             sys.stdout.buffer.flush()
 
     def _visible_rows(
         self,
-        rows: tuple[DisplayRow, ...],
+        rows: tuple[_DisplayRow, ...],
         selected: Session | None,
         capacity: int,
-    ) -> tuple[DisplayRow, ...]:
+    ) -> tuple[_DisplayRow, ...]:
         if capacity <= 0:
             self._viewport_start = 0
             return ()
@@ -191,7 +191,7 @@ class TerminalHost:
             (
                 index
                 for index, row in enumerate(rows)
-                if isinstance(row, SessionRow) and row.session == selected
+                if isinstance(row, _SessionRow) and row.session == selected
             ),
             0,
         )
@@ -207,33 +207,33 @@ class TerminalHost:
         height, width = self._screen.getmaxyx()
         status_row = height - 2
         help_row = height - 1
-        content_capacity = max(0, height - CONTENT_START_ROW - FOOTER_HEIGHT)
+        content_capacity = max(0, height - _CONTENT_START_ROW - _FOOTER_HEIGHT)
         self._screen.erase()
-        if TITLE_ROW < status_row:
-            _text(self._screen, TITLE_ROW, 2, "HERDR NAV", self.styles["accent"])
-        if SUMMARY_ROW < status_row:
+        if _TITLE_ROW < status_row:
+            _text(self._screen, _TITLE_ROW, 2, "HERDR NAV", self._palette["accent"])
+        if _SUMMARY_ROW < status_row:
             _text(
                 self._screen,
-                SUMMARY_ROW,
+                _SUMMARY_ROW,
                 2,
                 f"{len(snapshot.sessions)} running session"
                 + ("" if len(snapshot.sessions) == 1 else "s"),
-                self.styles["muted"],
+                self._palette["muted"],
             )
 
-        rows = display_rows(snapshot.sessions)
+        rows = _display_rows(snapshot.sessions)
         visible_rows = self._visible_rows(rows, snapshot.selected, content_capacity)
         for offset, row in enumerate(visible_rows):
-            screen_row = CONTENT_START_ROW + offset
-            if isinstance(row, GroupHeading):
+            screen_row = _CONTENT_START_ROW + offset
+            if isinstance(row, _GroupHeading):
                 _text(
                     self._screen,
                     screen_row,
                     2,
-                    STATUS_LABELS[row.status],
-                    self.styles[STATUS_STYLE_KEYS[row.status]] | curses.A_BOLD,
+                    _STATUS_LABELS[row.status],
+                    self._palette[_STATUS_STYLE_KEYS[row.status]] | curses.A_BOLD,
                 )
-            elif isinstance(row, SessionRow):
+            elif isinstance(row, _SessionRow):
                 selected = row.session == snapshot.selected
                 marker = "› " if selected else "  "
                 name_width = max(8, min(54, width // 2))
@@ -245,7 +245,7 @@ class TerminalHost:
                     screen_row,
                     2,
                     marker + name.ljust(name_width),
-                    curses.A_REVERSE if selected else self.styles["neutral"],
+                    curses.A_REVERSE if selected else self._palette["neutral"],
                 )
                 location = os.path.basename(row.session.cwd) or row.session.server_name
                 detail = f"{row.session.agent or 'shell'} · {location}"
@@ -254,24 +254,24 @@ class TerminalHost:
                     screen_row,
                     name_width + 5,
                     detail,
-                    self.styles["muted"],
+                    self._palette["muted"],
                 )
 
         if not rows and content_capacity:
             _text(
                 self._screen,
-                CONTENT_START_ROW,
+                _CONTENT_START_ROW,
                 2,
                 "No running Herdr agents",
-                self.styles["muted"],
+                self._palette["muted"],
             )
         status = snapshot.notice or snapshot.errors
         status_style = (
-            self.styles["accent"]
+            self._palette["accent"]
             if snapshot.notice
-            else self.styles["alert"]
+            else self._palette["alert"]
             if snapshot.errors
-            else self.styles["neutral"]
+            else self._palette["neutral"]
         )
         _text(self._screen, status_row, 2, status, status_style)
         _text(
@@ -279,7 +279,7 @@ class TerminalHost:
             help_row,
             2,
             "↑↓ / j k select · → open · r refresh · q quit",
-            self.styles["muted"],
+            self._palette["muted"],
         )
 
     def _restore(self) -> None:
@@ -288,7 +288,7 @@ class TerminalHost:
                 curses.endwin()
         finally:
             termios.tcsetattr(0, termios.TCSANOW, self._original)
-            sys.stdout.buffer.write(RESET_MODES + END_UPDATE)
+            sys.stdout.buffer.write(_RESET_MODES + _END_UPDATE)
             sys.stdout.buffer.flush()
 
     def __exit__(

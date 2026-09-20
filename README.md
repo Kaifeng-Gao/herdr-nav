@@ -5,8 +5,21 @@ and controlling existing [Herdr](https://github.com/ogulcancelik/herdr) agents.
 Herdr remains the process and session owner, so closing the dashboard does not
 stop agents.
 
-The project is under active development. Version 0.1.0 will focus on browsing
-existing local agents, attaching to them, and safely returning to the dashboard.
+The project is under active development. The dashboard currently discovers and
+browses existing local agents without taking terminal control. Attachment will
+arrive in the next release layer.
+
+## Usage
+
+Open the interactive dashboard:
+
+```sh
+uv run herdr-nav
+```
+
+Use Up/Down or j/k to select a session, r to refresh, and q to quit. Right shows
+an attachment placeholder without taking control of the selected agent. For a
+headless inventory, run `uv run herdr-nav --list`.
 
 ## Requirements
 

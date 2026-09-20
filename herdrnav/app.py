@@ -1,13 +1,16 @@
-"""Command-line composition for the headless Herdr inventory client."""
+"""Command-line composition for the Herdr operator dashboard."""
 
 import argparse
+import curses
 import os
 import shutil
 import sys
 from collections.abc import Sequence
 
 from .catalog import sort_sessions
+from .dashboard import Dashboard
 from .herdr import HerdrClient, HerdrError
+from .host import TerminalHost
 
 
 def _binary() -> str | None:
@@ -16,8 +19,8 @@ def _binary() -> str | None:
 
 
 def _arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="List existing local Herdr agents")
-    parser.add_argument("--session", help="List only this named Herdr server")
+    parser = argparse.ArgumentParser(description="Browse existing local Herdr agents")
+    parser.add_argument("--session", help="Show only this named Herdr server")
     parser.add_argument("--list", action="store_true", help="Print sessions and exit")
     return parser.parse_args(arguments)
 
@@ -32,13 +35,27 @@ def main(arguments: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    client = HerdrClient(binary, args.session)
     if not args.list:
-        print("herdr-nav: only --list is available in this release", file=sys.stderr)
-        return 2
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            print(
+                "herdr-nav: open the dashboard in a terminal, or use --list",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with TerminalHost() as host:
+                Dashboard(host, client).run()
+        except KeyboardInterrupt:
+            return 0
+        except (HerdrError, OSError, curses.error) as dashboard_error:
+            print(f"herdr-nav: {dashboard_error}", file=sys.stderr)
+            return 1
+        return 0
     try:
-        inventory = HerdrClient(binary, args.session).inventory()
-    except HerdrError as error:
-        print(f"herdr-nav: {error}", file=sys.stderr)
+        inventory = client.inventory()
+    except HerdrError as discovery_error:
+        print(f"herdr-nav: {discovery_error}", file=sys.stderr)
         return 1
     for session in sort_sessions(inventory.sessions):
         print(

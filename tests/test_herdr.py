@@ -3,6 +3,7 @@
 import subprocess
 import unittest
 
+from herdrnav.contracts import SessionStatus
 from herdrnav.herdr import HerdrClient, HerdrError
 
 
@@ -23,6 +24,18 @@ class HerdrClientTests(unittest.TestCase):
         self.assertEqual(inventory.errors, ())
         self.assertEqual(inventory.sessions[0].identity, ("/work.sock", "terminal"))
         self.assertEqual(inventory.sessions[0].title, "Task")
+        self.assertEqual(inventory.sessions[0].status, SessionStatus.READY)
+
+    def test_normalizes_unrecognized_status_to_unknown(self) -> None:
+        payload = '{"sessions": [{"name": "work", "socket_path": "/work.sock", "running": true}]}'
+        inventory = HerdrClient(
+            "herdr",
+            run_command=lambda _command: completed(payload),
+            request=lambda _path, _method: {
+                "agents": [{"terminal_id": "terminal", "pane_id": "pane", "agent_status": "paused"}]
+            },
+        ).inventory()
+        self.assertEqual(inventory.sessions[0].status, SessionStatus.UNKNOWN)
 
     def test_reports_malformed_agent_response_for_its_server(self) -> None:
         payload = '{"sessions": [{"name": "work", "socket_path": "/work.sock", "running": true}]}'

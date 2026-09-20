@@ -1,6 +1,18 @@
 """Immutable values shared by the Herdr adapter and its callers."""
 
 from dataclasses import dataclass
+from enum import Enum
+
+
+class SessionStatus(str, Enum):
+    """Operator-facing state for a discovered session."""
+
+    NEEDS_INPUT = "needs-input"
+    WORKING = "working"
+    READY = "ready"
+    READY_FOR_REVIEW = "ready-for-review"
+    STARTING = "starting"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -13,7 +25,7 @@ class Session:
     pane_id: str
     workspace_id: str
     agent: str
-    status: str
+    status: SessionStatus
     title: str
     cwd: str
 

@@ -4,22 +4,22 @@ import unittest
 from dataclasses import replace
 
 from herdrnav.catalog import Catalog, sort_sessions
-from herdrnav.contracts import Session
+from herdrnav.contracts import Session, SessionStatus
 
 
 def session(**changes: str) -> Session:
     baseline = Session(
         "/tmp/herdr.sock", "work", "terminal-a", "pane-a", "workspace-a", "codex",
-        "idle", "First", "/project",
+        SessionStatus.READY, "First", "/project",
     )
     return replace(baseline, **changes)
 
 
 class CatalogTests(unittest.TestCase):
-    def test_sorts_by_stable_display_fields(self) -> None:
+    def test_sorts_by_status_then_stable_display_fields(self) -> None:
         sessions = [
             session(terminal_id="b", title="Zulu"),
-            session(terminal_id="c", title="Alpha", status="working"),
+            session(terminal_id="c", title="Alpha", status=SessionStatus.WORKING),
             session(terminal_id="a", title="Beta"),
         ]
         self.assertEqual(
@@ -32,7 +32,7 @@ class CatalogTests(unittest.TestCase):
         catalog = Catalog()
         catalog.refresh([first, second])
         catalog.select_next(1)
-        changed = replace(second, status="blocked")
+        changed = replace(second, status=SessionStatus.NEEDS_INPUT)
         catalog.refresh([changed, first])
         self.assertEqual(catalog.selected, changed)
 

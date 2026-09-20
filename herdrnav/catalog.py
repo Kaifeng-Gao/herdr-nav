@@ -2,13 +2,25 @@
 
 from collections.abc import Iterable
 
-from .contracts import Session
+from .contracts import Session, SessionStatus
+
+STATUS_ORDER = (
+    SessionStatus.NEEDS_INPUT,
+    SessionStatus.WORKING,
+    SessionStatus.READY,
+    SessionStatus.READY_FOR_REVIEW,
+    SessionStatus.STARTING,
+    SessionStatus.UNKNOWN,
+)
+_STATUS_RANK = {status: index for index, status in enumerate(STATUS_ORDER)}
+
 
 def sort_sessions(sessions: Iterable[Session]) -> list[Session]:
     """Return sessions in a predictable operator-facing order."""
     return sorted(
         sessions,
         key=lambda session: (
+            _STATUS_RANK[session.status],
             session.server_name.casefold(),
             session.workspace_id.casefold(),
             session.title.casefold(),

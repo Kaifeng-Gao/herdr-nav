@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .contracts import Inventory, Session
+from .contracts import Inventory, Session, SessionStatus
 
 JsonObject = Mapping[str, Any]
 RunCommand = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
@@ -39,6 +39,16 @@ def _string(record: JsonObject, key: str, default: str = "") -> str:
     return value if isinstance(value, str) else default
 
 
+def _session_status(record: JsonObject) -> SessionStatus:
+    return {
+        "blocked": SessionStatus.NEEDS_INPUT,
+        "working": SessionStatus.WORKING,
+        "idle": SessionStatus.READY,
+        "done": SessionStatus.READY_FOR_REVIEW,
+        "starting": SessionStatus.STARTING,
+    }.get(_string(record, "agent_status"), SessionStatus.UNKNOWN)
+
+
 def _session(record: JsonObject, server: _Server) -> Session:
     terminal_id = _string(record, "terminal_id")
     pane_id = _string(record, "pane_id")
@@ -52,7 +62,7 @@ def _session(record: JsonObject, server: _Server) -> Session:
         pane_id=pane_id,
         workspace_id=_string(record, "workspace_id"),
         agent=agent,
-        status=_string(record, "agent_status", "unknown"),
+        status=_session_status(record),
         title=(
             _string(record, "terminal_title_stripped")
             or _string(record, "title")

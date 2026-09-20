@@ -43,7 +43,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     for session in sort_sessions(inventory.sessions):
         print(
             f"{session.server_name}/{session.pane_id}\t"
-            f"{session.status}\t{session.title}"
+            f"{session.status.value}\t{session.title}"
         )
     for error in inventory.errors:
         print(error, file=sys.stderr)

@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from herdrnav.app import main
-from herdrnav.contracts import Inventory, Session
+from herdrnav.contracts import Inventory, Session, SessionStatus
 
 
 class AppTests(unittest.TestCase):
@@ -13,7 +13,7 @@ class AppTests(unittest.TestCase):
             (
                 Session(
                     "/socket", "work", "terminal", "pane", "workspace", "codex",
-                    "idle", "Task", "/repo",
+                    SessionStatus.READY, "Task", "/repo",
                 ),
             ),
             ("other: unavailable",),

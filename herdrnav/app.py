@@ -7,6 +7,7 @@ import shutil
 import sys
 from collections.abc import Sequence
 
+from .attachment import Attachment
 from .catalog import sort_sessions
 from .dashboard import Dashboard
 from .herdr import HerdrClient, HerdrError
@@ -45,7 +46,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             return 1
         try:
             with TerminalUI() as ui:
-                Dashboard(ui, client).run()
+                attachment = Attachment(client, ui)
+                Dashboard(ui, client, attachment.run).run()
         except KeyboardInterrupt:
             return 0
         except (HerdrError, OSError, curses.error) as dashboard_error:

@@ -1,22 +1,46 @@
-"""Curses presentation, input decoding, and terminal lifecycle ownership."""
+"""Dashboard and attachment interaction over one physical terminal."""
 
 from __future__ import annotations
 
 import curses
 import os
+import re
+import select
 import sys
 import termios
+import time
+import tty
 from collections.abc import Iterable
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Literal, TypeAlias
 
-from .contracts import Session, SessionStatus
+from .attachment import (
+    AttachmentAction,
+    AttachmentEvent,
+    ForwardInput,
+)
+from .contracts import (
+    ScrollDirection,
+    ScrollModifier,
+    ScrollRequest,
+    Session,
+    SessionStatus,
+)
 from .dashboard import DashboardAction, DashboardSnapshot
 
 _BEGIN_UPDATE = b"\x1b[?2026h"
 _END_UPDATE = b"\x1b[?2026l"
-_RESET_MODES = b"\x1b[0m\x1b[?25h"
+_AGENT_MODES = b"\x1b[?1l\x1b>\x1b[?7l\x1b[?2004h\x1b[?1000h\x1b[?1006h"
+_COPY_MODES = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25l"
+_RESET_MODES = (
+    b"\x1b[0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?7h\x1b[?25h"
+)
+_KEYBOARD_PUSH = b"\x1b[>1u"
+_KEYBOARD_POP = b"\x1b[<1u"
+
+# A short grace period distinguishes standalone Escape from a split sequence.
+_ESCAPE_FLUSH_SECONDS = 0.05
 
 _TITLE_ROW = 1
 _SUMMARY_ROW = 2
@@ -64,6 +88,75 @@ class _SessionRow:
 _DisplayRow: TypeAlias = _GroupHeading | _Spacer | _SessionRow
 
 
+@dataclass(frozen=True)
+class _TerminalInput:
+    """One decoded terminal token and its bracketed-paste context."""
+
+    data: bytes
+    paste: bool
+
+
+def _legacy_key(data: bytes) -> bytes:
+    """Normalize ordinary controls while preserving enhanced modified keys."""
+    match = re.fullmatch(rb"\x1b\[(\d+)(?:;(\d+))?u", data)
+    if not match:
+        return data
+    code, modifier = int(match[1]), int(match[2] or 1)
+    if modifier == 1 and code in (9, 13, 27, 127):
+        return bytes([code])
+    if modifier == 5:
+        if 97 <= code <= 122 or 64 <= code <= 95 or code == 32:
+            return bytes([code & 31])
+        if code == 127:
+            return b"\x08"
+    if modifier == 3 and 32 <= code <= 126:
+        return b"\x1b" + bytes([code])
+    return data
+
+
+class _AttachmentInputDecoder:
+    """Preserve split escape sequences and bracketed-paste boundaries."""
+
+    def __init__(self) -> None:
+        self._pending = b""
+        self._pasting = False
+        self._last_read: float | None = None
+
+    def feed(self, data: bytes, now: float) -> tuple[_TerminalInput, ...]:
+        """Decode complete tokens, flushing a lone Escape after a short delay."""
+        if data:
+            self._last_read = now
+        self._pending += data
+        flush = (
+            self._last_read is not None
+            and now - self._last_read >= _ESCAPE_FLUSH_SECONDS
+        )
+        events: list[_TerminalInput] = []
+        while self._pending:
+            if self._pending.startswith(b"\x1b"):
+                match = re.match(
+                    rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|[^\[O])",
+                    self._pending,
+                )
+                if not match and not flush:
+                    break
+                token = match.group() if match else self._pending[:1]
+            else:
+                token = self._pending[:1]
+            self._pending = self._pending[len(token) :]
+            if token == b"\x1b[200~":
+                self._pasting = True
+            events.append(
+                _TerminalInput(
+                    token if self._pasting else _legacy_key(token),
+                    self._pasting,
+                )
+            )
+            if token == b"\x1b[201~":
+                self._pasting = False
+        return tuple(events)
+
+
 def _display_rows(sessions: Iterable[Session]) -> tuple[_DisplayRow, ...]:
     """Build tagged rows from sessions already sorted for display."""
     rows: list[_DisplayRow] = []
@@ -98,13 +191,16 @@ def _text(
 
 
 class TerminalUI:
-    """Present the dashboard while owning and restoring the physical terminal."""
+    """Translate operator interaction while owning the physical terminal."""
 
     _palette: dict[_PaletteKey, int]
 
     def __enter__(self) -> TerminalUI:
         self._original = termios.tcgetattr(0)
         self._curses_started = False
+        self._agent_mode = False
+        self._copying = False
+        self._attachment_input = _AttachmentInputDecoder()
         self._viewport_start = 0
         try:
             self._screen = curses.initscr()
@@ -139,7 +235,7 @@ class TerminalUI:
         return self
 
     @property
-    def _terminal_size(self) -> tuple[int, int]:
+    def size(self) -> tuple[int, int]:
         """Return terminal columns and rows."""
         size = os.get_terminal_size(sys.stdout.fileno())
         return size.columns, size.lines
@@ -164,7 +260,7 @@ class TerminalUI:
 
     def present(self, snapshot: DashboardSnapshot) -> None:
         """Resize and atomically present one dashboard snapshot."""
-        width, height = self._terminal_size
+        width, height = self.size
         if self._screen.getmaxyx() != (height, width):
             curses.resizeterm(height, width)
             self._screen.clearok(True)
@@ -282,9 +378,150 @@ class TerminalUI:
             self._palette["muted"],
         )
 
+    def read_attachment_events(
+        self,
+        session_ready: bool,
+        timeout: float,
+    ) -> tuple[AttachmentEvent, ...]:
+        """Wait for and translate raw attachment input."""
+        readable, _, _ = select.select([0], [], [], timeout)
+        data = os.read(0, 65536) if 0 in readable else b""
+        inputs = self._attachment_input.feed(data, time.monotonic())
+        return self._attachment_events(inputs, session_ready)
+
+    def _attachment_events(
+        self,
+        inputs: tuple[_TerminalInput, ...],
+        session_ready: bool = True,
+    ) -> tuple[AttachmentEvent, ...]:
+        """Apply local attachment bindings and return remaining actions."""
+        events: list[AttachmentEvent] = []
+        outgoing = bytearray()
+
+        def flush() -> None:
+            if outgoing:
+                events.append(ForwardInput(bytes(outgoing)))
+                outgoing.clear()
+
+        for input_event in inputs:
+            if not input_event.paste and input_event.data == b"\x1d":
+                flush()
+                events.append(AttachmentAction.DETACH)
+                break
+            if not session_ready:
+                continue
+            copy_key = not input_event.paste and input_event.data in (
+                b"\x1bOQ",
+                b"\x1b[Q",
+                b"\x1b[12~",
+            )
+            if copy_key or (
+                self._copying and not input_event.paste and input_event.data == b"\x1b"
+            ):
+                flush()
+                self._set_copy_mode(not self._copying)
+                if not self._copying:
+                    events.append(AttachmentAction.REPAINT)
+                continue
+            if self._copying:
+                continue
+            if not input_event.paste:
+                mouse = re.fullmatch(
+                    rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])",
+                    input_event.data,
+                )
+                if mouse and int(mouse[1]) & 64:
+                    flush()
+                    button = int(mouse[1])
+                    if (button & 3) in (0, 1) and mouse[4] == b"M":
+                        events.append(
+                            ScrollRequest(
+                                direction=(
+                                    ScrollDirection.DOWN
+                                    if button & 1
+                                    else ScrollDirection.UP
+                                ),
+                                lines=3,
+                                pointer=(
+                                    max(0, int(mouse[2]) - 1),
+                                    max(0, int(mouse[3]) - 1),
+                                ),
+                                modifiers=frozenset(
+                                    modifier
+                                    for enabled, modifier in (
+                                        (button & 4, ScrollModifier.SHIFT),
+                                        (button & 16, ScrollModifier.CONTROL),
+                                        (button & 8, ScrollModifier.ALT),
+                                    )
+                                    if enabled
+                                ),
+                            )
+                        )
+                    continue
+                if input_event.data in (b"\x1b[5~", b"\x1b[6~"):
+                    flush()
+                    events.append(
+                        ScrollRequest(
+                            direction=(
+                                ScrollDirection.UP
+                                if input_event.data == b"\x1b[5~"
+                                else ScrollDirection.DOWN
+                            ),
+                            lines=10,
+                        )
+                    )
+                    continue
+            outgoing.extend(input_event.data)
+        flush()
+        return tuple(events)
+
+    def _set_copy_mode(self, enabled: bool) -> None:
+        self._copying = enabled
+        sys.stdout.buffer.write(_COPY_MODES if enabled else _AGENT_MODES)
+        sys.stdout.buffer.flush()
+
+    def begin_attachment(self) -> None:
+        """Enter raw attachment mode before controller frames are awaited."""
+        if self._agent_mode:
+            return
+        curses.def_prog_mode()
+        tty.setraw(0)
+        self._agent_mode = True
+        self._copying = False
+        self._attachment_input = _AttachmentInputDecoder()
+        sys.stdout.buffer.write(_AGENT_MODES + _KEYBOARD_PUSH)
+        sys.stdout.buffer.flush()
+
+    def present_attachment(self, data: bytes) -> None:
+        """Atomically present attachment output unless native selection is active."""
+        if self._copying:
+            return
+        sys.stdout.buffer.write(_BEGIN_UPDATE + data + _END_UPDATE)
+        sys.stdout.buffer.flush()
+
+    def attachment_viewport_changed(self) -> None:
+        """Leave native selection before the attached viewport changes."""
+        if self._copying:
+            self._set_copy_mode(False)
+
+    def restore_dashboard(self) -> None:
+        """Leave raw attachment mode without leaving the application's screen."""
+        if not self._agent_mode:
+            return
+        sys.stdout.buffer.write(_KEYBOARD_POP + _RESET_MODES)
+        sys.stdout.buffer.flush()
+        curses.reset_prog_mode()
+        self._screen.keypad(True)
+        self._screen.timeout(80)
+        self._screen.clearok(True)
+        self._agent_mode = False
+        self._copying = False
+        self._attachment_input = _AttachmentInputDecoder()
+
     def _restore(self) -> None:
         try:
             if self._curses_started:
+                self.restore_dashboard()
                 curses.endwin()
         finally:
             termios.tcsetattr(0, termios.TCSANOW, self._original)

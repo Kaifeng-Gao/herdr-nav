@@ -6,9 +6,11 @@ import threading
 import time
 import unittest
 from dataclasses import replace
+from unittest.mock import Mock
 
 from herdrnav.contracts import Inventory, Session, SessionStatus
 from herdrnav.dashboard import Dashboard, DashboardAction, DashboardSnapshot
+from herdrnav.herdr import HerdrError
 
 
 def session(**changes: object) -> Session:
@@ -56,23 +58,32 @@ def finish_refresh(dashboard: Dashboard) -> None:
 
 
 class DashboardTests(unittest.TestCase):
-    def test_open_notice_survives_a_successful_poll_until_next_action(self) -> None:
+    def test_open_runs_selected_session_and_reports_release(self) -> None:
         expected = session()
-        dashboard = Dashboard(UI(), Source(Inventory((expected,), ())))
+        opener = Mock()
+        dashboard = Dashboard(UI(), Source(Inventory((expected,), ())), opener)
         finish_refresh(dashboard)
 
         dashboard.handle(DashboardAction.OPEN)
-        dashboard._next_poll = 0.0
-        finish_refresh(dashboard)
 
-        self.assertEqual(
-            dashboard.snapshot.notice, "Attachment arrives in the next layer"
+        opener.assert_called_once_with(expected)
+        self.assertEqual(dashboard.snapshot.notice, "Released pane-a")
+
+    def test_attachment_error_is_visible_without_leaving_dashboard(self) -> None:
+        expected = session()
+        dashboard = Dashboard(
+            UI(),
+            Source(Inventory((expected,), ())),
+            Mock(side_effect=HerdrError("Session changed; refresh")),
         )
-        dashboard.handle(DashboardAction.REDRAW)
-        self.assertEqual(dashboard.snapshot.notice, "")
+        dashboard.catalog.refresh([expected])
+
+        dashboard.handle(DashboardAction.OPEN)
+
+        self.assertEqual(dashboard.snapshot.notice, "Session changed; refresh")
 
     def test_refresh_notice_clears_when_refresh_completes(self) -> None:
-        dashboard = Dashboard(UI(), Source(Inventory((), ())))
+        dashboard = Dashboard(UI(), Source(Inventory((), ())), Mock())
         dashboard.handle(DashboardAction.REFRESH)
 
         finish_refresh(dashboard)
@@ -82,7 +93,7 @@ class DashboardTests(unittest.TestCase):
     def test_navigation_preserves_selection_after_inventory_reorders(self) -> None:
         first = session()
         second = session(terminal_id="terminal-b", pane_id="pane-b", title="Second")
-        dashboard = Dashboard(UI(), Source(Inventory((), ())))
+        dashboard = Dashboard(UI(), Source(Inventory((), ())), Mock())
         dashboard.catalog.refresh([first, second])
 
         dashboard.handle(DashboardAction.NEXT)
@@ -91,7 +102,7 @@ class DashboardTests(unittest.TestCase):
         )
 
         selected = dashboard.snapshot.selected
-        self.assertIsNotNone(selected)
+        assert selected is not None
         self.assertEqual(selected.identity, second.identity)
 
     def test_quit_remains_responsive_while_inventory_is_delayed(self) -> None:
@@ -104,7 +115,7 @@ class DashboardTests(unittest.TestCase):
                 release.wait(2)
                 return Inventory((), ())
 
-        dashboard = Dashboard(UI(), DelayedSource())
+        dashboard = Dashboard(UI(), DelayedSource(), Mock())
         begin = time.monotonic()
         dashboard.tick()
         self.assertTrue(started.wait(1))
@@ -128,7 +139,7 @@ class DashboardTests(unittest.TestCase):
                 DashboardAction.QUIT,
             ]
         )
-        dashboard = Dashboard(ui, DelayedSource())
+        dashboard = Dashboard(ui, DelayedSource(), Mock())
 
         dashboard.run()
         release.set()

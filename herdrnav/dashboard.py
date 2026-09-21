@@ -64,12 +64,14 @@ class Dashboard:
         self,
         ui: DashboardUI,
         source: InventorySource,
+        open_session: Callable[[Session], None],
         *,
         poll_interval: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.ui = ui
         self.source = source
+        self._open_session = open_session
         self.catalog = Catalog()
         self.notice = "Connecting to Herdr…"
         self.errors = ""
@@ -152,8 +154,18 @@ class Dashboard:
             self.notice = "Refreshing…"
             self._notice_clears_on_refresh = True
         elif action is DashboardAction.OPEN and self.catalog.selected is not None:
-            self.notice = "Attachment arrives in the next layer"
+            self._open(self.catalog.selected)
         return True
+
+    def _open(self, session: Session) -> None:
+        """Open one selected session and report attachment errors."""
+        try:
+            self._open_session(session)
+        except (HerdrError, OSError) as error:
+            self.notice = str(error)
+        else:
+            self.notice = f"Released {session.pane_id}"
+            self._next_poll = 0.0
 
     def run(self) -> None:
         """Run the dashboard until the operator quits."""

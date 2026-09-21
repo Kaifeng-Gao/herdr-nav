@@ -1,4 +1,4 @@
-"""Tests for curses presentation, input decoding, and terminal cleanup."""
+"""Tests for curses presentation, terminal modes, and cleanup."""
 
 from __future__ import annotations
 
@@ -9,9 +9,21 @@ import unittest
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
-from herdrnav.contracts import Session, SessionStatus
+from herdrnav.attachment import AttachmentAction, ForwardInput
+from herdrnav.contracts import (
+    ScrollDirection,
+    ScrollModifier,
+    ScrollRequest,
+    Session,
+    SessionStatus,
+)
 from herdrnav.dashboard import DashboardAction, DashboardSnapshot
-from herdrnav.terminal_ui import TerminalUI
+from herdrnav.terminal_ui import (
+    TerminalUI,
+    _AttachmentInputDecoder,
+    _KEYBOARD_POP,
+    _KEYBOARD_PUSH,
+)
 
 PALETTE = {
     "accent": 10,
@@ -75,6 +87,15 @@ def rendering_ui(screen: Screen) -> TerminalUI:
     ui._screen = screen
     ui._viewport_start = 0
     ui._palette = PALETTE
+    return ui
+
+
+def attachment_ui() -> TerminalUI:
+    ui = TerminalUI.__new__(TerminalUI)
+    ui._agent_mode = False
+    ui._copying = False
+    ui._attachment_input = _AttachmentInputDecoder()
+    ui._screen = Mock()
     return ui
 
 
@@ -189,6 +210,116 @@ class TerminalUITests(unittest.TestCase):
         ui._screen.get_wch.side_effect = curses.error
         self.assertEqual(ui.read_action(), DashboardAction.TIMEOUT)
 
+    def test_attachment_input_preserves_split_keys_pastes_and_modifiers(self) -> None:
+        decoder = _AttachmentInputDecoder()
+        self.assertEqual(decoder.feed(b"\x1b[", 0.0), ())
+        left = decoder.feed(b"D", 0.01)
+        self.assertEqual(left[0].data, b"\x1b[D")
+
+        paste = b"\x1b[200~hello\x1d\x1b[13;2u\x1b[201~"
+        pasted = decoder.feed(paste, 0.02)
+        self.assertEqual(b"".join(event.data for event in pasted), paste)
+        self.assertTrue(all(event.paste for event in pasted))
+
+        controls = decoder.feed(
+            b"\r\x1b[13u\x1b[27u\x1b[93;5u\x1b[98;5u\x1b[117;5u",
+            0.03,
+        )
+        self.assertEqual(
+            b"".join(event.data for event in controls),
+            b"\r\r\x1b\x1d\x02\x15",
+        )
+
+    def test_attachment_input_read_emits_semantic_events(self) -> None:
+        ui = attachment_ui()
+        with (
+            patch(
+                "herdrnav.terminal_ui.select.select",
+                return_value=([0], [], []),
+            ),
+            patch("herdrnav.terminal_ui.os.read", return_value=b"draft"),
+            patch("herdrnav.terminal_ui.time.monotonic", return_value=0.0),
+        ):
+            events = ui.read_attachment_events(True, 0.03)
+
+        self.assertEqual(events, (ForwardInput(b"draft"),))
+
+    def test_detach_is_read_before_the_session_is_ready(self) -> None:
+        ui = attachment_ui()
+        with (
+            patch(
+                "herdrnav.terminal_ui.select.select",
+                return_value=([0], [], []),
+            ),
+            patch("herdrnav.terminal_ui.os.read", return_value=b"\x1d"),
+            patch("herdrnav.terminal_ui.time.monotonic", return_value=0.0),
+        ):
+            events = ui.read_attachment_events(False, 0.03)
+
+        self.assertEqual(events, (AttachmentAction.DETACH,))
+
+    def test_attachment_scrolls_are_typed_and_horizontal_wheel_is_consumed(
+        self,
+    ) -> None:
+        ui = attachment_ui()
+        inputs = ui._attachment_input.feed(
+            b"\x1b[<65;4;3M\x1b[<66;4;3M\x1b[<67;4;3M\x1b[<65;4;3m",
+            0.0,
+        )
+        events = ui._attachment_events(inputs)
+
+        self.assertEqual(len(events), 1)
+        scroll = events[0]
+        self.assertIsInstance(scroll, ScrollRequest)
+        assert isinstance(scroll, ScrollRequest)
+        self.assertEqual(scroll.direction, ScrollDirection.DOWN)
+        self.assertEqual(scroll.pointer, (3, 2))
+
+        modified = ui._attachment_events(
+            ui._attachment_input.feed(b"\x1b[<92;4;3M", 0.01)
+        )[0]
+        assert isinstance(modified, ScrollRequest)
+        self.assertEqual(
+            modified.modifiers,
+            frozenset(
+                {
+                    ScrollModifier.SHIFT,
+                    ScrollModifier.ALT,
+                    ScrollModifier.CONTROL,
+                }
+            ),
+        )
+
+    def test_copy_mode_owns_local_keys_and_freezes_attachment_painting(self) -> None:
+        ui = attachment_ui()
+        output = io.BytesIO()
+        with (
+            patch("herdrnav.terminal_ui.sys.stdout", Mock(buffer=output)),
+            patch("herdrnav.terminal_ui.curses.def_prog_mode"),
+            patch("herdrnav.terminal_ui.curses.reset_prog_mode"),
+            patch("herdrnav.terminal_ui.tty.setraw"),
+        ):
+            ui.begin_attachment()
+            ui.present_attachment(b"first")
+            enter_copy = ui._attachment_events(
+                ui._attachment_input.feed(b"\x1bOQ", 0.0)
+            )
+            ui.present_attachment(b"hidden")
+            leave_copy = ui._attachment_events(
+                ui._attachment_input.feed(b"\x1bOQ\x1d", 0.1)
+            )
+            ui.present_attachment(b"latest")
+            ui.restore_dashboard()
+
+        self.assertEqual(enter_copy, ())
+        self.assertEqual(
+            leave_copy,
+            (AttachmentAction.REPAINT, AttachmentAction.DETACH),
+        )
+        self.assertIn(b"first", output.getvalue())
+        self.assertNotIn(b"hidden", output.getvalue())
+        self.assertIn(b"latest", output.getvalue())
+
     def test_restores_terminal_when_curses_setup_fails(self) -> None:
         output = io.BytesIO()
         stdout = Mock(buffer=output)
@@ -254,3 +385,28 @@ class TerminalUITests(unittest.TestCase):
         ui._screen.clearok.assert_called_once_with(True)
         ui._render.assert_called_once()
         self.assertEqual(output.getvalue(), b"\x1b[?2026h\x1b[?2026l")
+
+    def test_attachment_keyboard_mode_is_balanced_across_copy_and_detach(self) -> None:
+        ui = attachment_ui()
+        output = io.BytesIO()
+        with (
+            patch("herdrnav.terminal_ui.sys.stdout", Mock(buffer=output)),
+            patch("herdrnav.terminal_ui.curses.def_prog_mode"),
+            patch("herdrnav.terminal_ui.curses.reset_prog_mode"),
+            patch("herdrnav.terminal_ui.tty.setraw"),
+        ):
+            ui.begin_attachment()
+            ui.present_attachment(b"first")
+            ui.present_attachment(b"second")
+            ui._set_copy_mode(True)
+            ui._set_copy_mode(False)
+            ui.restore_dashboard()
+            ui.restore_dashboard()
+            self.assertEqual(output.getvalue().count(_KEYBOARD_PUSH), 1)
+            self.assertEqual(output.getvalue().count(_KEYBOARD_POP), 1)
+            ui.begin_attachment()
+            ui.present_attachment(b"reattach")
+            ui.restore_dashboard()
+
+        self.assertEqual(output.getvalue().count(_KEYBOARD_PUSH), 2)
+        self.assertEqual(output.getvalue().count(_KEYBOARD_POP), 2)

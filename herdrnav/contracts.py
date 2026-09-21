@@ -45,6 +45,31 @@ class Frame:
     data: bytes
 
 
+class ScrollDirection(str, Enum):
+    """Direction of a terminal history scroll request."""
+
+    UP = "up"
+    DOWN = "down"
+
+
+class ScrollModifier(Enum):
+    """Semantic modifier held during a terminal-history gesture."""
+
+    SHIFT = "shift"
+    ALT = "alt"
+    CONTROL = "control"
+
+
+@dataclass(frozen=True)
+class ScrollRequest:
+    """Typed terminal-history movement independent of Herdr wire fields."""
+
+    direction: ScrollDirection
+    lines: int
+    pointer: tuple[int, int] | None = None
+    modifiers: frozenset[ScrollModifier] = frozenset()
+
+
 @dataclass(frozen=True)
 class Inventory:
     """Sessions obtained from healthy servers and errors from unavailable ones."""

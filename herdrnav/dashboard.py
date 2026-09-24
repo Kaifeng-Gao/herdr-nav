@@ -24,6 +24,7 @@ class DashboardAction(Enum):
     NEXT = auto()
     REFRESH = auto()
     OPEN = auto()
+    CLOSE = auto()
     QUIT = auto()
 
 
@@ -55,13 +56,15 @@ class DashboardUI(Protocol):
 
 
 class SessionSource(Protocol):
-    """Where the dashboard lists, starts, and opens sessions."""
+    """Where the dashboard lists, starts, opens, and closes sessions."""
 
     def inventory(self) -> Inventory: ...
 
     def attach(self, session: Session) -> None: ...
 
     def launch(self, command: str, beside: Session | None) -> Session: ...
+
+    def close(self, session: Session) -> None: ...
 
 
 _Result = TypeVar("_Result")
@@ -129,6 +132,7 @@ class Dashboard:
         self._next_poll = 0.0
         self._refresh: _Job[Inventory] | None = None
         self._launch: _PendingLaunch | None = None
+        self._armed_close: tuple[str, str] | None = None
 
     @property
     def snapshot(self) -> DashboardSnapshot:
@@ -182,7 +186,10 @@ class Dashboard:
         self.catalog.add(session)
         self.catalog.select(session)
         self.notice = f"Started {launch.command} in {session.pane_id}"
-        # Inventory already in flight predates the new agent.
+        self._reload_inventory()
+
+    def _reload_inventory(self) -> None:
+        """Poll now, ignoring any inventory loaded before this change."""
         self._refresh = None
         self._next_poll = 0.0
 
@@ -190,6 +197,7 @@ class Dashboard:
         """Apply one semantic action and return whether the UI should continue."""
         self.notice = ""
         self._notice_clears_on_refresh = False
+        armed_close, self._armed_close = self._armed_close, None
         if action is DashboardAction.QUIT:
             return False
         if isinstance(action, Launch):
@@ -204,6 +212,13 @@ class Dashboard:
             self._notice_clears_on_refresh = True
         elif action is DashboardAction.OPEN and self.catalog.selected is not None:
             self._open(self.catalog.selected)
+        elif action is DashboardAction.CLOSE and self.catalog.selected is not None:
+            selected = self.catalog.selected
+            if armed_close == selected.identity:
+                self._close(selected)
+            else:
+                self._armed_close = selected.identity
+                self.notice = f"Press ctrl+x again to close {selected.pane_id}"
         return True
 
     def _start_launch(self, command: str) -> None:
@@ -221,6 +236,16 @@ class Dashboard:
         except (HerdrError, OSError) as error:
             self.notice = f"Could not open {session.pane_id}: {error}"
         self._next_poll = 0.0
+
+    def _close(self, session: Session) -> None:
+        try:
+            self.source.close(session)
+        except (HerdrError, OSError) as error:
+            self.notice = f"Could not close {session.pane_id}: {error}"
+            return
+        self.catalog.remove(session)
+        self.notice = f"Closed {session.pane_id}"
+        self._reload_inventory()
 
     def run(self) -> None:
         """Run the dashboard until the operator quits."""

@@ -146,7 +146,7 @@ def _request(socket_path: str, method: str, params: JsonObject) -> JsonObject:
 
 
 class HerdrClient:
-    """Discover, start, and open agent sessions on local Herdr servers."""
+    """Discover, start, open, and close agent sessions on local Herdr servers."""
 
     def __init__(
         self,
@@ -188,9 +188,7 @@ class HerdrClient:
         Takes control from any other viewer. Returns when the operator presses
         Ctrl+b q; the session keeps running.
         """
-        pane = self._pane(session.socket_path, session.pane_id)
-        if _string(pane, "terminal_id") != session.terminal_id:
-            raise HerdrError("Session changed; refresh and select it again")
+        self._require_current(session)
         # Herdr rejects the terminal id when it follows --takeover.
         command = (
             self._binary, "terminal", "attach", session.terminal_id, "--takeover"
@@ -202,6 +200,14 @@ class HerdrClient:
             raise HerdrError(str(error)) from error
         if completed.returncode:
             raise HerdrError(completed.stderr or "Herdr attach failed")
+
+    def close(self, session: Session) -> None:
+        """Stop the session's agent by closing its Herdr pane.
+
+        Closes nothing if the pane now shows a different terminal.
+        """
+        self._require_current(session)
+        self._request(session.socket_path, "pane.close", {"pane_id": session.pane_id})
 
     def launch(self, command: str, beside: Session | None) -> Session:
         """Start command in a new Herdr tab and return it once it is an agent.
@@ -278,6 +284,12 @@ class HerdrClient:
                     " detected an agent there"
                 )
             time.sleep(_DETECTION_POLL_INTERVAL)
+
+    def _require_current(self, session: Session) -> None:
+        """Raise unless the session's pane still shows the terminal listed for it."""
+        pane = self._pane(session.socket_path, session.pane_id)
+        if _string(pane, "terminal_id") != session.terminal_id:
+            raise HerdrError("Session changed; refresh and select it again")
 
     def _pane(self, socket_path: str, pane_id: str) -> JsonObject:
         """Return Herdr's current record for a pane."""

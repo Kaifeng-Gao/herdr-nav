@@ -63,6 +63,8 @@ class Source:
         )
         self.launch_gate = threading.Event()
         self.launch_gate.set()
+        self.closed: list[Session] = []
+        self.close_error: Exception | None = None
 
     def inventory(self) -> Inventory:
         return self.value
@@ -71,6 +73,11 @@ class Source:
         self.attached.append(session)
         if self.attach_error is not None:
             raise self.attach_error
+
+    def close(self, session: Session) -> None:
+        if self.close_error is not None:
+            raise self.close_error
+        self.closed.append(session)
 
     def launch(self, command: str, beside: Session | None) -> Session:
         self.launches.append((command, beside))
@@ -296,3 +303,56 @@ class DashboardLaunchTests(unittest.TestCase):
         source.launch_gate.set()
         finish_launch(dashboard)
         self.assertEqual([command for command, _ in source.launches], ["claude"])
+
+
+class DashboardCloseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.first = session()
+        self.second = session(terminal_id="terminal-b", pane_id="pane-b", title="Second")
+        self.source = Source(Inventory((self.first, self.second), ()))
+        self.dashboard = Dashboard(UI(), self.source)
+        finish_refresh(self.dashboard)
+
+    def test_close_needs_a_second_press_then_selects_the_next_agent(self) -> None:
+        self.dashboard.handle(DashboardAction.CLOSE)
+        self.assertEqual(self.source.closed, [])
+        self.assertEqual(self.dashboard.snapshot.notice, "Press ctrl+x again to close pane-a")
+
+        self.dashboard.handle(DashboardAction.CLOSE)
+
+        self.assertEqual(self.source.closed, [self.first])
+        self.assertEqual(self.dashboard.snapshot.sessions, (self.second,))
+        self.assertEqual(self.dashboard.snapshot.selected, self.second)
+        self.assertEqual(self.dashboard.snapshot.notice, "Closed pane-a")
+        self.assertIsNone(self.dashboard._refresh)
+        self.assertEqual(self.dashboard._next_poll, 0.0)
+
+    def test_any_other_action_cancels_a_pending_close(self) -> None:
+        for action in (DashboardAction.REDRAW, DashboardAction.NEXT, Launch("codex")):
+            with self.subTest(action=action):
+                self.dashboard.handle(DashboardAction.CLOSE)
+                self.dashboard.handle(action)
+                self.dashboard.handle(DashboardAction.CLOSE)
+                self.assertEqual(self.source.closed, [])
+                self.dashboard.handle(DashboardAction.REDRAW)
+
+    def test_a_second_press_on_another_agent_only_asks_again(self) -> None:
+        self.dashboard.handle(DashboardAction.CLOSE)
+        self.dashboard.catalog.select(self.second)
+
+        self.dashboard.handle(DashboardAction.CLOSE)
+
+        self.assertEqual(self.source.closed, [])
+        self.assertEqual(self.dashboard.snapshot.notice, "Press ctrl+x again to close pane-b")
+
+    def test_close_failure_keeps_the_agent_listed(self) -> None:
+        self.source.close_error = HerdrError("Session changed; refresh and select it again")
+
+        self.dashboard.handle(DashboardAction.CLOSE)
+        self.dashboard.handle(DashboardAction.CLOSE)
+
+        self.assertEqual(self.dashboard.snapshot.sessions, (self.first, self.second))
+        self.assertEqual(
+            self.dashboard.snapshot.notice,
+            "Could not close pane-a: Session changed; refresh and select it again",
+        )

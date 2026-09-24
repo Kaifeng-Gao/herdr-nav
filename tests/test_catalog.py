@@ -44,3 +44,26 @@ class CatalogTests(unittest.TestCase):
         catalog.select_next(1)
         catalog.refresh([first])
         self.assertEqual(catalog.selected, first)
+
+    def test_add_lists_an_unreported_session_once_in_display_order(self) -> None:
+        working = session(terminal_id="working", status=SessionStatus.WORKING)
+        launched = session(terminal_id="launched", status=SessionStatus.NEEDS_INPUT)
+        catalog = Catalog()
+        catalog.refresh([working])
+
+        catalog.add(launched)
+        catalog.add(launched)
+
+        self.assertEqual(catalog.sessions, (launched, working))
+        self.assertEqual(catalog.selected, working)
+
+    def test_select_ignores_a_session_the_catalog_does_not_list(self) -> None:
+        first = session(terminal_id="first")
+        second = session(terminal_id="second")
+        catalog = Catalog()
+        catalog.refresh([first, second])
+
+        catalog.select(second)
+        catalog.select(session(terminal_id="missing"))
+
+        self.assertEqual(catalog.selected, second)

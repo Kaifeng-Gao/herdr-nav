@@ -56,6 +56,19 @@ class Catalog:
         if self._selected is None or self.selected is None:
             self._selected = self._sessions[0].identity if self._sessions else None
 
+    def add(self, session: Session) -> None:
+        """List a session that inventory has not reported yet.
+
+        The next refresh replaces it with whatever inventory reports.
+        """
+        if all(listed.identity != session.identity for listed in self._sessions):
+            self._sessions = sort_sessions((*self._sessions, session))
+
+    def select(self, session: Session) -> None:
+        """Select session if the catalog lists it."""
+        if any(listed.identity == session.identity for listed in self._sessions):
+            self._selected = session.identity
+
     def select_next(self, offset: int) -> Session | None:
         """Move selection cyclically by offset and return the newly selected session."""
         if not self._sessions:

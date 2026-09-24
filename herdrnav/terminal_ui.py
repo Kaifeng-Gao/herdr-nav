@@ -13,7 +13,7 @@ from types import TracebackType
 from typing import Literal, TypeAlias
 
 from .contracts import Session, SessionStatus
-from .dashboard import DashboardAction, DashboardSnapshot
+from .dashboard import DashboardAction, DashboardSnapshot, Launch
 
 _BEGIN_UPDATE = b"\x1b[?2026h"
 _END_UPDATE = b"\x1b[?2026l"
@@ -24,6 +24,10 @@ _TITLE_ROW = 1
 _SUMMARY_ROW = 2
 _CONTENT_START_ROW = 4
 _FOOTER_HEIGHT = 3
+
+_COMMAND_PROMPT = "Start › "
+_ENTER_KEYS = ("\n", "\r", curses.KEY_ENTER)
+_BACKSPACE_KEYS = ("\x7f", "\b", curses.KEY_BACKSPACE)
 
 _PaletteKey = Literal["accent", "alert", "success", "muted", "neutral"]
 _STATUS_LABELS = {
@@ -100,7 +104,11 @@ def _text(
 
 
 class TerminalUI:
-    """Present the dashboard while owning and restoring the physical terminal."""
+    """Present the dashboard while owning and restoring the physical terminal.
+
+    Tab opens a command field whose text stays here until Enter submits it
+    as a Launch; the dashboard sees only that finished request.
+    """
 
     _palette: dict[_PaletteKey, int]
 
@@ -108,6 +116,7 @@ class TerminalUI:
         self._original = termios.tcgetattr(0)
         self._curses_started = False
         self._viewport_start = 0
+        self._draft: str | None = None
         try:
             self._screen = curses.initscr()
             self._curses_started = True
@@ -146,12 +155,17 @@ class TerminalUI:
         size = os.get_terminal_size(sys.stdout.fileno())
         return size.columns, size.lines
 
-    def read_action(self) -> DashboardAction:
+    def read_action(self) -> DashboardAction | Launch:
         """Translate one curses input into a dashboard action."""
         try:
             key = self._screen.get_wch()
         except curses.error:
             return DashboardAction.TIMEOUT
+        if self._draft is not None:
+            return self._edit_draft(key)
+        if key == "\t":
+            self._draft = ""
+            return DashboardAction.REDRAW
         if key in ("q", "Q"):
             return DashboardAction.QUIT
         if key in (curses.KEY_UP, "k"):
@@ -162,6 +176,20 @@ class TerminalUI:
             return DashboardAction.REFRESH
         if key == curses.KEY_RIGHT:
             return DashboardAction.OPEN
+        return DashboardAction.REDRAW
+
+    def _edit_draft(self, key: int | str) -> DashboardAction | Launch:
+        draft = self._draft or ""
+        if key in _ENTER_KEYS:
+            self._draft = None
+            command = draft.strip()
+            return Launch(command) if command else DashboardAction.REDRAW
+        if key in ("\x1b", "\t"):
+            self._draft = None
+        elif key in _BACKSPACE_KEYS:
+            self._draft = draft[:-1]
+        elif isinstance(key, str) and key.isprintable():
+            self._draft = draft + key
         return DashboardAction.REDRAW
 
     @contextmanager
@@ -285,22 +313,42 @@ class TerminalUI:
                 "No running Herdr agents",
                 self._palette["muted"],
             )
-        status = snapshot.notice or snapshot.errors
-        status_style = (
-            self._palette["accent"]
-            if snapshot.notice
-            else self._palette["alert"]
-            if snapshot.errors
-            else self._palette["neutral"]
-        )
-        _text(self._screen, status_row, 2, status, status_style)
-        _text(
-            self._screen,
-            help_row,
-            2,
-            "↑↓ / j k select · → open (ctrl+b q returns) · r refresh · q quit",
-            self._palette["muted"],
-        )
+        if self._draft is None:
+            status = snapshot.notice or snapshot.errors
+            status_style = (
+                self._palette["accent"]
+                if snapshot.notice
+                else self._palette["alert"]
+                if snapshot.errors
+                else self._palette["neutral"]
+            )
+            _text(self._screen, status_row, 2, status, status_style)
+            help_text = (
+                "↑↓ select · → open (ctrl+b q returns) · tab new · r refresh · q quit"
+            )
+        else:
+            self._render_draft(status_row, self._draft)
+            help_text = "enter start · esc cancel"
+        _text(self._screen, help_row, 2, help_text, self._palette["muted"])
+
+    def _render_draft(self, row: int, draft: str) -> None:
+        _, width = self._screen.getmaxyx()
+        _text(self._screen, row, 2, _COMMAND_PROMPT, self._palette["accent"])
+        start = 2 + len(_COMMAND_PROMPT)
+        # Keep the end of a long command, where the operator is typing, in view.
+        room = max(0, width - start - 2)
+        visible = draft[len(draft) - room :] if len(draft) > room else draft
+        _text(self._screen, row, start, visible)
+        cursor = start + len(visible)
+        _text(self._screen, row, cursor, " ", curses.A_REVERSE)
+        if not draft:
+            _text(
+                self._screen,
+                row,
+                cursor + 2,
+                "claude, codex, or another agent command",
+                self._palette["muted"],
+            )
 
     def _restore(self) -> None:
         try:

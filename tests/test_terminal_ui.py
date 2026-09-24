@@ -247,12 +247,12 @@ class TerminalUITests(unittest.TestCase):
         ):
             with ui.suspended():
                 shell_mode.assert_called_once_with()
-                self.assertEqual(output.getvalue(), b"")
+                program_mode.assert_not_called()
             endwin.assert_not_called()
             program_mode.assert_called_once_with()
 
         ui._screen.clearok.assert_called_once_with(True)
-        self.assertEqual(output.getvalue(), b"\x1b[?1049h\x1b[?25l")
+        self.assertEqual(output.getvalue(), b"\x1b[?25l")
 
     def test_resize_is_applied_before_a_synchronized_presentation(self) -> None:
         ui = TerminalUI.__new__(TerminalUI)

@@ -232,6 +232,20 @@ class TerminalUITests(unittest.TestCase):
         restore.assert_called_once()
         self.assertTrue(output.getvalue().endswith(b"\x1b[?2026l"))
 
+    def test_suspended_releases_the_terminal_and_forces_a_full_redraw(self) -> None:
+        ui = TerminalUI.__new__(TerminalUI)
+        ui._screen = Mock()
+        with (
+            patch("herdrnav.terminal_ui.curses.endwin") as endwin,
+            patch("herdrnav.terminal_ui.curses.curs_set") as curs_set,
+            ui.suspended(),
+        ):
+            endwin.assert_called_once_with()
+            ui._screen.clearok.assert_not_called()
+
+        ui._screen.clearok.assert_called_once_with(True)
+        curs_set.assert_called_once_with(0)
+
     def test_resize_is_applied_before_a_synchronized_presentation(self) -> None:
         ui = TerminalUI.__new__(TerminalUI)
         ui._screen = Mock()

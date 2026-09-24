@@ -45,7 +45,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             return 1
         try:
             with TerminalUI() as ui:
-                Dashboard(ui, client).run()
+                Dashboard(ui, client, client.attach).run()
         except KeyboardInterrupt:
             return 0
         except (HerdrError, OSError, curses.error) as dashboard_error:

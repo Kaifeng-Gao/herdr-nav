@@ -6,7 +6,8 @@ import curses
 import os
 import sys
 import termios
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Literal, TypeAlias
@@ -162,6 +163,16 @@ class TerminalUI:
             return DashboardAction.OPEN
         return DashboardAction.REDRAW
 
+    @contextmanager
+    def suspended(self) -> Iterator[None]:
+        """Release the terminal to another program, then redraw on the next present."""
+        curses.endwin()
+        try:
+            yield
+        finally:
+            self._screen.clearok(True)
+            curses.curs_set(0)
+
     def present(self, snapshot: DashboardSnapshot) -> None:
         """Resize and atomically present one dashboard snapshot."""
         width, height = self._terminal_size
@@ -278,7 +289,7 @@ class TerminalUI:
             self._screen,
             help_row,
             2,
-            "↑↓ / j k select · → open · r refresh · q quit",
+            "↑↓ / j k select · → open (ctrl+b q returns) · r refresh · q quit",
             self._palette["muted"],
         )
 

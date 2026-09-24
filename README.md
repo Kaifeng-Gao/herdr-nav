@@ -17,9 +17,10 @@ Open the interactive dashboard:
 uv run herdr-nav
 ```
 
-Use Up/Down or j/k to select a session, r to refresh, and q to quit. Right shows
-an attachment placeholder without taking control of the selected agent. For a
-headless inventory, run `uv run herdr-nav --list`.
+Use Up/Down or j/k to select a session, r to refresh, and q to quit. Right opens
+the selected session with Herdr's own `herdr terminal attach`, taking control from
+any other viewer. Press Ctrl+b q to return to the dashboard; the agent keeps
+running. For a headless inventory, run `uv run herdr-nav --list`.
 
 ## Requirements
 

@@ -176,6 +176,8 @@ class TerminalUI:
             return DashboardAction.REFRESH
         if key == curses.KEY_RIGHT:
             return DashboardAction.OPEN
+        if key == "\x18":
+            return DashboardAction.CLOSE
         return DashboardAction.REDRAW
 
     def _edit_draft(self, key: int | str) -> DashboardAction | Launch:
@@ -324,7 +326,7 @@ class TerminalUI:
             )
             _text(self._screen, status_row, 2, status, status_style)
             help_text = (
-                "↑↓ select · → open (ctrl+b q returns) · tab new · r refresh · q quit"
+                "↑↓ select · → open (ctrl+b q returns) · tab new · ctrl+x close · q quit"
             )
         else:
             self._render_draft(status_row, self._draft)

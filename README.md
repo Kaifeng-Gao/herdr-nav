@@ -5,7 +5,8 @@ their status.
 
 No workspaces, tabs, or panes: just your agents, grouped by status, with
 **Needs input** at the top. Press Tab to start an agent, → to jump into one,
-and Ctrl+b q to come back. Quitting `herdr-nav` never stops your agents.
+and Ctrl+b q to come back. Ctrl+x twice closes one. Quitting
+`herdr-nav` never stops your agents.
 
 ## Quick start
 
@@ -41,6 +42,7 @@ and [Herdr](https://herdr.dev/docs/install/) 0.9 or newer.
 | ↑ ↓ or j k | Select an agent |
 | → | Jump into the agent |
 | Tab | Start an agent: type a command such as `claude` or `codex`, then Enter |
+| Ctrl+x twice | Close the agent, stopping it and its Herdr pane |
 | Ctrl+b q | Return to the dashboard (the agent keeps running) |
 | r | Refresh now (the list also refreshes every second) |
 | q | Quit |

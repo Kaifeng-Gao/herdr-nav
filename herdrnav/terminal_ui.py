@@ -168,7 +168,8 @@ class TerminalUI:
     def suspended(self) -> Iterator[None]:
         """Lend the terminal to another program without leaving the alternate screen.
 
-        The dashboard is fully redrawn on the next present.
+        On return the terminal holds its display until the next present, which
+        fully redraws the dashboard.
         """
         curses.def_prog_mode()
         curses.reset_shell_mode()
@@ -176,7 +177,7 @@ class TerminalUI:
             yield
         finally:
             # curses can't track the program's screen switch or cursor changes.
-            sys.stdout.buffer.write(_RESUME_SCREEN)
+            sys.stdout.buffer.write(_BEGIN_UPDATE + _RESUME_SCREEN)
             sys.stdout.buffer.flush()
             curses.reset_prog_mode()
             self._screen.clearok(True)

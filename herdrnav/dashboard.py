@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import queue
 import threading
 import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Protocol
+from typing import Generic, Protocol, TypeVar, cast
 
 from .catalog import Catalog
 from .contracts import Inventory, Session
@@ -29,6 +28,13 @@ class DashboardAction(Enum):
 
 
 @dataclass(frozen=True)
+class Launch:
+    """Operator request to start command as a new agent."""
+
+    command: str
+
+
+@dataclass(frozen=True)
 class DashboardSnapshot:
     """Immutable state needed to draw one dashboard frame."""
 
@@ -43,23 +49,62 @@ class DashboardUI(Protocol):
 
     def present(self, snapshot: DashboardSnapshot) -> None: ...
 
-    def read_action(self) -> DashboardAction: ...
+    def read_action(self) -> DashboardAction | Launch: ...
 
     def suspended(self) -> AbstractContextManager[None]: ...
 
 
 class SessionSource(Protocol):
-    """Where the dashboard lists sessions and hands the terminal to one."""
+    """Where the dashboard lists, starts, and opens sessions."""
 
     def inventory(self) -> Inventory: ...
 
     def attach(self, session: Session) -> None: ...
 
+    def launch(self, command: str, beside: Session | None) -> Session: ...
+
+
+_Result = TypeVar("_Result")
+
+
+class _Job(Generic[_Result]):
+    """One call running on a daemon thread, so quitting never waits for it."""
+
+    def __init__(self, call: Callable[[], _Result], name: str) -> None:
+        self._finished = threading.Event()
+        self._value: _Result | None = None
+        self._error: Exception | None = None
+        threading.Thread(target=self._run, args=(call,), name=name, daemon=True).start()
+
+    def _run(self, call: Callable[[], _Result]) -> None:
+        try:
+            self._value = call()
+        except Exception as error:
+            self._error = error
+        self._finished.set()
+
+    @property
+    def done(self) -> bool:
+        """Return whether the call has returned or raised."""
+        return self._finished.is_set()
+
+    def wait(self, timeout: float) -> bool:
+        """Block until the call finishes or timeout seconds pass; return done."""
+        return self._finished.wait(timeout)
+
+    def result(self) -> _Result:
+        """Return the finished call's value, or raise the exception it raised."""
+        if not self.done:
+            raise RuntimeError("job is still running")
+        if self._error is not None:
+            raise self._error
+        return cast(_Result, self._value)
+
 
 @dataclass(frozen=True)
-class _RefreshResult:
-    inventory: Inventory | None = None
-    error: Exception | None = None
+class _PendingLaunch:
+    command: str
+    job: _Job[Session]
 
 
 class Dashboard:
@@ -82,73 +127,74 @@ class Dashboard:
         self._poll_interval = poll_interval
         self._clock = clock
         self._next_poll = 0.0
-        self._refresh_thread: threading.Thread | None = None
-        self._refresh_results: queue.SimpleQueue[_RefreshResult] = queue.SimpleQueue()
+        self._refresh: _Job[Inventory] | None = None
+        self._launch: _PendingLaunch | None = None
 
     @property
     def snapshot(self) -> DashboardSnapshot:
         """Return the current state for presentation."""
+        starting = f"Starting {self._launch.command}…" if self._launch else ""
         return DashboardSnapshot(
             sessions=self.catalog.sessions,
             selected=self.catalog.selected,
-            notice=self.notice,
+            notice=self.notice or starting,
             errors=self.errors,
         )
-
-    def _load_inventory(self) -> None:
-        try:
-            result = _RefreshResult(inventory=self.source.inventory())
-        except Exception as error:
-            result = _RefreshResult(error=error)
-        self._refresh_results.put(result)
-
-    def _start_refresh(self) -> None:
-        self._refresh_thread = threading.Thread(
-            target=self._load_inventory,
-            name="herdr-nav-inventory",
-            daemon=True,
-        )
-        self._refresh_thread.start()
 
     def tick(self) -> bool:
         """Apply completed inventory and report whether visible state changed."""
         changed = False
-        try:
-            result = self._refresh_results.get_nowait()
-        except queue.Empty:
-            result = None
-        if result is not None:
-            self._refresh_thread = None
+        if self._refresh is not None and self._refresh.done:
+            refresh, self._refresh = self._refresh, None
             self._next_poll = self._clock() + self._poll_interval
             if self._notice_clears_on_refresh and self.notice:
                 self.notice = ""
                 changed = True
-            if result.inventory is not None:
-                previous_sessions = self.catalog.sessions
-                previous_errors = self.errors
-                self.catalog.refresh(result.inventory.sessions)
-                self.errors = "; ".join(result.inventory.errors)
-                changed |= (
-                    self.catalog.sessions != previous_sessions
-                    or self.errors != previous_errors
-                )
-            elif isinstance(result.error, (HerdrError, OSError)):
-                rendered_error = str(result.error)
-                changed |= rendered_error != self.errors
-                self.errors = rendered_error
-            elif result.error is not None:
-                raise result.error
-        if self._refresh_thread is None and self._clock() >= self._next_poll:
-            self._start_refresh()
+            changed |= self._apply_refresh(refresh)
+        # After refresh, so inventory that predates the launch can't hide the agent.
+        if self._launch is not None and self._launch.job.done:
+            launch, self._launch = self._launch, None
+            self._finish_launch(launch)
+            changed = True
+        if self._refresh is None and self._clock() >= self._next_poll:
+            self._refresh = _Job(self.source.inventory, "herdr-nav-inventory")
         return changed
 
-    def handle(self, action: DashboardAction) -> bool:
+    def _apply_refresh(self, refresh: _Job[Inventory]) -> bool:
+        previous_sessions = self.catalog.sessions
+        previous_errors = self.errors
+        try:
+            inventory = refresh.result()
+        except (HerdrError, OSError) as error:
+            self.errors = str(error)
+        else:
+            self.catalog.refresh(inventory.sessions)
+            self.errors = "; ".join(inventory.errors)
+        return self.catalog.sessions != previous_sessions or self.errors != previous_errors
+
+    def _finish_launch(self, launch: _PendingLaunch) -> None:
+        self._notice_clears_on_refresh = False
+        try:
+            session = launch.job.result()
+        except (HerdrError, OSError) as error:
+            self.notice = f"Could not start {launch.command}: {error}"
+            return
+        self.catalog.add(session)
+        self.catalog.select(session)
+        self.notice = f"Started {launch.command} in {session.pane_id}"
+        # Inventory already in flight predates the new agent.
+        self._refresh = None
+        self._next_poll = 0.0
+
+    def handle(self, action: DashboardAction | Launch) -> bool:
         """Apply one semantic action and return whether the UI should continue."""
         self.notice = ""
         self._notice_clears_on_refresh = False
         if action is DashboardAction.QUIT:
             return False
-        if action is DashboardAction.PREVIOUS:
+        if isinstance(action, Launch):
+            self._start_launch(action.command)
+        elif action is DashboardAction.PREVIOUS:
             self.catalog.select_next(-1)
         elif action is DashboardAction.NEXT:
             self.catalog.select_next(1)
@@ -159,6 +205,14 @@ class Dashboard:
         elif action is DashboardAction.OPEN and self.catalog.selected is not None:
             self._open(self.catalog.selected)
         return True
+
+    def _start_launch(self, command: str) -> None:
+        if self._launch is not None:
+            self.notice = f"Wait for {self._launch.command} to start"
+            return
+        beside = self.catalog.selected
+        job = _Job(lambda: self.source.launch(command, beside), "herdr-nav-launch")
+        self._launch = _PendingLaunch(command, job)
 
     def _open(self, session: Session) -> None:
         try:

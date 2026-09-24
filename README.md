@@ -4,8 +4,8 @@ A minimal, agent-centric view of your [Herdr](https://herdr.dev) agents and
 their status.
 
 No workspaces, tabs, or panes: just your agents, grouped by status, with
-**Needs input** at the top. Press → to jump into an agent and Ctrl+b q to come
-back. Quitting `herdr-nav` never stops your agents.
+**Needs input** at the top. Press Tab to start an agent, → to jump into one,
+and Ctrl+b q to come back. Quitting `herdr-nav` never stops your agents.
 
 ## Quick start
 
@@ -18,9 +18,8 @@ and [Herdr](https://herdr.dev/docs/install/) 0.9 or newer.
    curl -fsSL https://herdr.dev/install.sh | sh
    ```
 
-2. **Start Herdr and an agent.** Run `herdr`, then start an agent such as
-   `claude` or `codex` in a pane. Press Ctrl+b q to detach; Herdr and the
-   agent keep running in the background.
+2. **Start Herdr.** Run `herdr`, then press Ctrl+b q to detach. The Herdr
+   server keeps running in the background; herdr-nav needs nothing else.
 
 3. **Install herdr-nav:**
 
@@ -41,11 +40,18 @@ and [Herdr](https://herdr.dev/docs/install/) 0.9 or newer.
 | --- | --- |
 | ↑ ↓ or j k | Select an agent |
 | → | Jump into the agent |
+| Tab | Start an agent: type a command such as `claude` or `codex`, then Enter |
 | Ctrl+b q | Return to the dashboard (the agent keeps running) |
 | r | Refresh now (the list also refreshes every second) |
 | q | Quit |
 
 If that agent is already open in another herdr-nav, jumping in takes it over.
+
+A new agent runs through your login shell in the directory you started
+herdr-nav from, in a new Herdr tab next to the selected agent. It appears once
+Herdr recognizes it as an agent, usually within a few seconds; a command that
+exits first, or that Herdr doesn't recognize within 30 seconds, is reported on
+the status line.
 
 ## Options
 

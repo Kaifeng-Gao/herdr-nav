@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 
 from herdrnav.contracts import Inventory, Session, SessionStatus
-from herdrnav.dashboard import Dashboard, DashboardAction, DashboardSnapshot
+from herdrnav.dashboard import Dashboard, DashboardAction, DashboardSnapshot, Launch
 from herdrnav.herdr import HerdrError
 
 
@@ -57,6 +57,12 @@ class Source:
         self.value = inventory
         self.attach_error = attach_error
         self.attached: list[Session] = []
+        self.launches: list[tuple[str, Session | None]] = []
+        self.launch_result: Session | Exception = session(
+            terminal_id="terminal-new", pane_id="pane-new", agent="claude"
+        )
+        self.launch_gate = threading.Event()
+        self.launch_gate.set()
 
     def inventory(self) -> Inventory:
         return self.value
@@ -66,13 +72,28 @@ class Source:
         if self.attach_error is not None:
             raise self.attach_error
 
+    def launch(self, command: str, beside: Session | None) -> Session:
+        self.launches.append((command, beside))
+        self.launch_gate.wait(2)
+        if isinstance(self.launch_result, Exception):
+            raise self.launch_result
+        return self.launch_result
+
 
 def finish_refresh(dashboard: Dashboard) -> None:
     dashboard.tick()
-    refresh = dashboard._refresh_thread
+    refresh = dashboard._refresh
     if refresh is None:
         raise AssertionError("refresh did not start")
-    refresh.join(timeout=1)
+    refresh.wait(timeout=1)
+    dashboard.tick()
+
+
+def finish_launch(dashboard: Dashboard) -> None:
+    launch = dashboard._launch
+    if launch is None:
+        raise AssertionError("launch did not start")
+    launch.job.wait(timeout=1)
     dashboard.tick()
 
 
@@ -186,3 +207,92 @@ class DashboardTests(unittest.TestCase):
         release.set()
 
         self.assertEqual(len(ui.snapshots), 3)
+
+
+class DashboardLaunchTests(unittest.TestCase):
+    def test_launch_starts_beside_the_selection_then_selects_the_new_agent(self) -> None:
+        existing = session()
+        source = Source(Inventory((existing,), ()))
+        source.launch_gate.clear()
+        dashboard = Dashboard(UI(), source)
+        finish_refresh(dashboard)
+
+        dashboard.handle(Launch("claude"))
+        self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
+        dashboard.handle(DashboardAction.REDRAW)
+        self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
+        source.launch_gate.set()
+        finish_launch(dashboard)
+
+        self.assertEqual(source.launches, [("claude", existing)])
+        self.assertIn(source.launch_result, dashboard.snapshot.sessions)
+        self.assertEqual(dashboard.snapshot.selected, source.launch_result)
+        self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
+
+    def test_launch_discards_inventory_that_was_loading_before_the_agent_existed(
+        self,
+    ) -> None:
+        existing = session()
+        release_stale_inventory = threading.Event()
+
+        class FirstInventorySlowSource(Source):
+            calls = 0
+
+            def inventory(self) -> Inventory:
+                reported = self.value
+                self.calls += 1
+                if self.calls == 1:
+                    release_stale_inventory.wait(2)
+                return reported
+
+        source = FirstInventorySlowSource(Inventory((existing,), ()))
+        dashboard = Dashboard(UI(), source)
+        dashboard.catalog.refresh([existing])
+        dashboard.tick()
+        stale_refresh = dashboard._refresh
+
+        dashboard.handle(Launch("claude"))
+        source.value = Inventory((existing, source.launch_result), ())
+        finish_launch(dashboard)
+        fresh_refresh = dashboard._refresh
+        release_stale_inventory.set()
+        for refresh in (stale_refresh, fresh_refresh):
+            assert refresh is not None
+            refresh.wait(timeout=1)
+        dashboard.tick()
+
+        self.assertIsNot(fresh_refresh, stale_refresh)
+        self.assertEqual(dashboard.snapshot.selected, source.launch_result)
+
+    def test_launch_failure_is_shown_until_the_next_action(self) -> None:
+        source = Source(Inventory((), ()))
+        source.launch_result = HerdrError("the command exited before Herdr detected an agent")
+        dashboard = Dashboard(UI(), source)
+
+        dashboard.handle(Launch("claud"))
+        finish_launch(dashboard)
+        refresh = dashboard._refresh
+        assert refresh is not None
+        refresh.wait(timeout=1)
+        dashboard.tick()
+
+        self.assertEqual(
+            dashboard.snapshot.notice,
+            "Could not start claud: the command exited before Herdr detected an agent",
+        )
+        self.assertEqual(source.launches, [("claud", None)])
+        dashboard.handle(DashboardAction.REDRAW)
+        self.assertEqual(dashboard.snapshot.notice, "")
+
+    def test_a_second_launch_waits_for_the_first(self) -> None:
+        source = Source(Inventory((), ()))
+        source.launch_gate.clear()
+        dashboard = Dashboard(UI(), source)
+
+        dashboard.handle(Launch("claude"))
+        dashboard.handle(Launch("codex"))
+
+        self.assertEqual(dashboard.snapshot.notice, "Wait for claude to start")
+        source.launch_gate.set()
+        finish_launch(dashboard)
+        self.assertEqual([command for command, _ in source.launches], ["claude"])

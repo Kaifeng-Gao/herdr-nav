@@ -10,7 +10,7 @@ from dataclasses import replace
 from unittest.mock import Mock, patch
 
 from herdrnav.contracts import Session, SessionStatus
-from herdrnav.dashboard import DashboardAction, DashboardSnapshot
+from herdrnav.dashboard import DashboardAction, DashboardSnapshot, Launch
 from herdrnav.terminal_ui import TerminalUI
 
 PALETTE = {
@@ -75,6 +75,7 @@ def rendering_ui(screen: Screen) -> TerminalUI:
     ui._screen = screen
     ui._viewport_start = 0
     ui._palette = PALETTE
+    ui._draft = None
     return ui
 
 
@@ -182,12 +183,54 @@ class TerminalUITests(unittest.TestCase):
         )
         ui = TerminalUI.__new__(TerminalUI)
         ui._screen = Mock()
+        ui._draft = None
         for key, expected in cases:
             with self.subTest(key=key):
                 ui._screen.get_wch.return_value = key
                 self.assertEqual(ui.read_action(), expected)
         ui._screen.get_wch.side_effect = curses.error
         self.assertEqual(ui.read_action(), DashboardAction.TIMEOUT)
+
+    def test_tab_composes_a_command_that_enter_submits_as_a_launch(self) -> None:
+        ui = rendering_ui(Screen())
+        keys = ["\t", "q", "x", "\x7f", *" --resume", curses.KEY_UP, "\n"]
+        ui._screen.get_wch = Mock(side_effect=keys)
+
+        actions = [ui.read_action() for _ in keys]
+
+        self.assertEqual(actions[:-1], [DashboardAction.REDRAW] * (len(keys) - 1))
+        self.assertEqual(actions[-1], Launch("q --resume"))
+        self.assertIsNone(ui._draft)
+
+    def test_escape_and_an_empty_enter_leave_the_command_field(self) -> None:
+        ui = rendering_ui(Screen())
+        for keys in (["\t", "c", "\x1b"], ["\t", " ", "\n"]):
+            with self.subTest(keys=keys):
+                ui._screen.get_wch = Mock(side_effect=keys)
+                actions = [ui.read_action() for _ in keys]
+                self.assertEqual(actions, [DashboardAction.REDRAW] * len(keys))
+                self.assertIsNone(ui._draft)
+                ui._screen.get_wch = Mock(return_value="q")
+                self.assertEqual(ui.read_action(), DashboardAction.QUIT)
+
+    def test_command_field_replaces_the_status_line_and_keeps_its_end_visible(self) -> None:
+        screen = Screen()
+        ui = rendering_ui(screen)
+        ui._draft = ""
+        ui._render(snapshot(notice="Started codex in w1:p2"))
+        rendered = [value for _, value, _ in screen.writes]
+        self.assertIn("Start › ", rendered)
+        self.assertIn("claude, codex, or another agent command", rendered)
+        self.assertNotIn("Started codex in w1:p2", rendered)
+        self.assertIn("enter start · esc cancel", rendered)
+
+        screen.width = 30
+        ui._draft = "claude --dangerously-skip-permissions"
+        ui._render(snapshot())
+        rendered = [value for _, value, _ in screen.writes]
+        room = 30 - len("  Start › ") - 2
+        self.assertIn(ui._draft[-room:], rendered)
+        self.assertIn((22, " ", curses.A_REVERSE), screen.writes)
 
     def test_restores_terminal_when_curses_setup_fails(self) -> None:
         output = io.BytesIO()

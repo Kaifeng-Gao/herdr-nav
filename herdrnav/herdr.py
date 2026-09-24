@@ -5,6 +5,7 @@ import os
 import socket
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -18,9 +19,20 @@ RunAttached = Callable[
 ]
 Request = Callable[[str, str, JsonObject], JsonObject]
 
+_DETECTION_TIMEOUT = 30.0
+_DETECTION_POLL_INTERVAL = 0.25
+
 
 class HerdrError(Exception):
-    """A Herdr operation could not be completed."""
+    """A Herdr operation could not be completed.
+
+    code is the server's error code, such as "pane_not_found", when the
+    server rejected the request, and None for local or transport failures.
+    """
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -121,7 +133,12 @@ def _request(socket_path: str, method: str, params: JsonObject) -> JsonObject:
     if not isinstance(response, dict):
         raise HerdrError("invalid Herdr response")
     if "error" in response:
-        raise HerdrError(str(response["error"]))
+        error = response["error"]
+        if isinstance(error, dict):
+            raise HerdrError(
+                _string(error, "message") or str(error), _string(error, "code") or None
+            )
+        raise HerdrError(str(error))
     result = response.get("result")
     if not isinstance(result, dict):
         raise HerdrError("Herdr response is missing an object result")
@@ -129,7 +146,7 @@ def _request(socket_path: str, method: str, params: JsonObject) -> JsonObject:
 
 
 class HerdrClient:
-    """Discover local Herdr sessions and hand the terminal to one of them."""
+    """Discover, start, and open agent sessions on local Herdr servers."""
 
     def __init__(
         self,
@@ -171,12 +188,7 @@ class HerdrClient:
         Takes control from any other viewer. Returns when the operator presses
         Ctrl+b q; the session keeps running.
         """
-        result = self._request(
-            session.socket_path, "pane.get", {"pane_id": session.pane_id}
-        )
-        pane = result.get("pane")
-        if not isinstance(pane, dict):
-            raise HerdrError("pane.get response is missing a pane object")
+        pane = self._pane(session.socket_path, session.pane_id)
         if _string(pane, "terminal_id") != session.terminal_id:
             raise HerdrError("Session changed; refresh and select it again")
         # Herdr rejects the terminal id when it follows --takeover.
@@ -190,6 +202,89 @@ class HerdrClient:
             raise HerdrError(str(error)) from error
         if completed.returncode:
             raise HerdrError(completed.stderr or "Herdr attach failed")
+
+    def launch(self, command: str, beside: Session | None) -> Session:
+        """Start command in a new Herdr tab and return it once it is an agent.
+
+        The command runs through the operator's login shell in this process's
+        working directory, on beside's server and workspace when given. Blocks
+        until Herdr detects an agent, and raises HerdrError if the command
+        exits first or none is detected within 30 seconds.
+        """
+        server, placement = self._placement(beside)
+        shell = os.environ.get("SHELL") or "/bin/sh"
+        result = self._request(
+            server.socket_path,
+            "layout.apply",
+            {
+                **placement,
+                "focus": False,
+                "tab_label": command,
+                "root": {
+                    "type": "pane",
+                    "cwd": os.getcwd(),
+                    # Interactive login, so the operator's PATH and aliases apply.
+                    "command": [shell, "-lic", command],
+                },
+            },
+        )
+        layout = result.get("layout")
+        root = layout.get("root") if isinstance(layout, dict) else None
+        pane_id = _string(root, "pane_id") if isinstance(root, dict) else ""
+        if not pane_id:
+            raise HerdrError("layout.apply response is missing the new pane")
+        return self._detected_agent(server, pane_id)
+
+    def _placement(self, beside: Session | None) -> tuple[_Server, JsonObject]:
+        """Return the server and layout.apply target that a new tab joins."""
+        if beside is not None:
+            server = _Server(beside.server_name, beside.socket_path)
+            return server, {"workspace_id": beside.workspace_id}
+        servers = self._servers()
+        if not servers:
+            raise HerdrError("No Herdr server is running")
+        server = servers[0]
+        workspaces = self._request(server.socket_path, "workspace.list", {}).get(
+            "workspaces"
+        )
+        if isinstance(workspaces, list) and workspaces and isinstance(workspaces[0], dict):
+            return server, {"workspace_id": _string(workspaces[0], "workspace_id")}
+        # A new workspace opens with a shell tab; the agent replaces that shell.
+        created = self._request(
+            server.socket_path, "workspace.create", {"cwd": os.getcwd(), "focus": False}
+        ).get("tab")
+        tab_id = _string(created, "tab_id") if isinstance(created, dict) else ""
+        if not tab_id:
+            raise HerdrError("workspace.create response is missing its tab")
+        return server, {"tab_id": tab_id}
+
+    def _detected_agent(self, server: _Server, pane_id: str) -> Session:
+        """Poll the new pane until Herdr reports an agent in it."""
+        deadline = time.monotonic() + _DETECTION_TIMEOUT
+        while True:
+            try:
+                pane = self._pane(server.socket_path, pane_id)
+            except HerdrError as error:
+                if error.code == "pane_not_found":
+                    raise HerdrError(
+                        "the command exited before Herdr detected an agent"
+                    ) from error
+                raise
+            if _string(pane, "agent"):
+                return _session(pane, server)
+            if time.monotonic() >= deadline:
+                raise HerdrError(
+                    f"the command is running in {pane_id}, but Herdr has not"
+                    " detected an agent there"
+                )
+            time.sleep(_DETECTION_POLL_INTERVAL)
+
+    def _pane(self, socket_path: str, pane_id: str) -> JsonObject:
+        """Return Herdr's current record for a pane."""
+        pane = self._request(socket_path, "pane.get", {"pane_id": pane_id}).get("pane")
+        if not isinstance(pane, dict):
+            raise HerdrError("pane.get response is missing a pane object")
+        return pane
 
     def _servers(self) -> tuple[_Server, ...]:
         try:

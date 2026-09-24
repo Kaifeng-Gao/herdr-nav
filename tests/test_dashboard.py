@@ -69,10 +69,10 @@ class Source:
 
 def finish_refresh(dashboard: Dashboard) -> None:
     dashboard.tick()
-    refresh = dashboard._refresh_thread
+    refresh = dashboard._refresh
     if refresh is None:
         raise AssertionError("refresh did not start")
-    refresh.join(timeout=1)
+    refresh.wait(timeout=1)
     dashboard.tick()
 
 

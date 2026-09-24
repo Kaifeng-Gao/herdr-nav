@@ -1,11 +1,11 @@
 # herdr-nav
 
-One screen for every coding agent you run in [Herdr](https://herdr.dev).
+A minimal, agent-centric view of your [Herdr](https://herdr.dev) agents and
+their status.
 
-`herdr-nav` lists your Herdr agents grouped by what they need from you:
-**Needs input** first, then **Working**, **Ready**, and **Ready for review**. Pick one, press
-→ to take over its terminal, and press Ctrl+b q to come back to the list. Herdr
-keeps owning the agents, so quitting `herdr-nav` never stops them.
+No workspaces, tabs, or panes: just your agents, grouped by status, with
+**Needs input** at the top. Press → to jump into an agent and Ctrl+b q to come
+back. Quitting `herdr-nav` never stops your agents.
 
 ## Quick start
 
@@ -40,12 +40,12 @@ and [Herdr](https://herdr.dev/docs/install/) 0.9 or newer.
 | Key | Action |
 | --- | --- |
 | ↑ ↓ or j k | Select an agent |
-| → | Open the agent's terminal |
+| → | Jump into the agent |
 | Ctrl+b q | Return to the dashboard (the agent keeps running) |
 | r | Refresh now (the list also refreshes every second) |
 | q | Quit |
 
-Opening an agent takes control of its terminal from any other viewer.
+If that agent is already open in another herdr-nav, jumping in takes it over.
 
 ## Options
 

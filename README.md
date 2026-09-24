@@ -37,12 +37,6 @@ uv sync --frozen
 uv run python -m unittest discover -s tests -v
 ```
 
-Run the opt-in end-to-end test against its own temporary Herdr server:
-
-```sh
-HERDR_INTEGRATION=1 uv run python -m unittest tests.test_herdr_integration -v
-```
-
 Build the distribution artifacts:
 
 ```sh

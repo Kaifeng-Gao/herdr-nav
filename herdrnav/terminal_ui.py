@@ -18,7 +18,7 @@ from .dashboard import DashboardAction, DashboardSnapshot
 _BEGIN_UPDATE = b"\x1b[?2026h"
 _END_UPDATE = b"\x1b[?2026l"
 _RESET_MODES = b"\x1b[0m\x1b[?25h"
-_HIDE_CURSOR = b"\x1b[?25l"
+_RESUME_SCREEN = b"\x1b[?1049h\x1b[?25l"
 
 _TITLE_ROW = 1
 _SUMMARY_ROW = 2
@@ -166,7 +166,7 @@ class TerminalUI:
 
     @contextmanager
     def suspended(self) -> Iterator[None]:
-        """Lend the terminal to a program that stays on this alternate screen.
+        """Lend the terminal to another program without leaving the alternate screen.
 
         The dashboard is fully redrawn on the next present.
         """
@@ -175,11 +175,11 @@ class TerminalUI:
         try:
             yield
         finally:
+            # curses can't track the program's screen switch or cursor changes.
+            sys.stdout.buffer.write(_RESUME_SCREEN)
+            sys.stdout.buffer.flush()
             curses.reset_prog_mode()
             self._screen.clearok(True)
-            # curses thinks the cursor is still hidden, so curs_set(0) would do nothing.
-            sys.stdout.buffer.write(_HIDE_CURSOR)
-            sys.stdout.buffer.flush()
 
     def present(self, snapshot: DashboardSnapshot) -> None:
         """Resize and atomically present one dashboard snapshot."""

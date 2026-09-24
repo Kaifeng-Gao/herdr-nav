@@ -48,10 +48,12 @@ class DashboardUI(Protocol):
     def suspended(self) -> AbstractContextManager[None]: ...
 
 
-class InventorySource(Protocol):
-    """Source used by the background inventory poller."""
+class SessionSource(Protocol):
+    """Where the dashboard lists sessions and hands the terminal to one."""
 
     def inventory(self) -> Inventory: ...
+
+    def attach(self, session: Session) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -60,24 +62,19 @@ class _RefreshResult:
     error: Exception | None = None
 
 
-OpenSession = Callable[[Session], None]
-
-
 class Dashboard:
     """Manage inventory, selection, and notices without terminal details."""
 
     def __init__(
         self,
         ui: DashboardUI,
-        source: InventorySource,
-        open_session: OpenSession,
+        source: SessionSource,
         *,
         poll_interval: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.ui = ui
         self.source = source
-        self._open_session = open_session
         self.catalog = Catalog()
         self.notice = "Connecting to Herdr…"
         self.errors = ""
@@ -166,7 +163,7 @@ class Dashboard:
     def _open(self, session: Session) -> None:
         try:
             with self.ui.suspended():
-                self._open_session(session)
+                self.source.attach(session)
         except (HerdrError, OSError) as error:
             self.notice = f"Could not open {session.pane_id}: {error}"
         self._next_poll = 0.0

@@ -50,16 +50,21 @@ class UI:
             self.events.append("resume")
 
 
-def ignore_open(_session: Session) -> None:
-    pass
-
-
 class Source:
-    def __init__(self, inventory: Inventory) -> None:
+    def __init__(
+        self, inventory: Inventory, attach_error: Exception | None = None
+    ) -> None:
         self.value = inventory
+        self.attach_error = attach_error
+        self.attached: list[Session] = []
 
     def inventory(self) -> Inventory:
         return self.value
+
+    def attach(self, session: Session) -> None:
+        self.attached.append(session)
+        if self.attach_error is not None:
+            raise self.attach_error
 
 
 def finish_refresh(dashboard: Dashboard) -> None:
@@ -75,28 +80,30 @@ class DashboardTests(unittest.TestCase):
     def test_open_hands_the_terminal_to_the_session_then_refreshes(self) -> None:
         expected = session()
         ui = UI()
-        opened: list[Session] = []
 
-        def open_session(target: Session) -> None:
-            ui.events.append("open")
-            opened.append(target)
+        class RecordingSource(Source):
+            def attach(self, session: Session) -> None:
+                ui.events.append("attach")
+                super().attach(session)
 
-        dashboard = Dashboard(ui, Source(Inventory((expected,), ())), open_session)
+        source = RecordingSource(Inventory((expected,), ()))
+        dashboard = Dashboard(ui, source)
         finish_refresh(dashboard)
 
         self.assertTrue(dashboard.handle(DashboardAction.OPEN))
 
-        self.assertEqual(opened, [expected])
-        self.assertEqual(ui.events, ["suspend", "open", "resume"])
+        self.assertEqual(source.attached, [expected])
+        self.assertEqual(ui.events, ["suspend", "attach", "resume"])
         self.assertEqual(dashboard.snapshot.notice, "")
         self.assertEqual(dashboard._next_poll, 0.0)
 
     def test_open_failure_is_shown_until_the_next_action(self) -> None:
-        def open_session(_target: Session) -> None:
-            raise HerdrError("Session changed; refresh and select it again")
-
         ui = UI()
-        dashboard = Dashboard(ui, Source(Inventory((session(),), ())), open_session)
+        source = Source(
+            Inventory((session(),), ()),
+            HerdrError("Session changed; refresh and select it again"),
+        )
+        dashboard = Dashboard(ui, source)
         finish_refresh(dashboard)
 
         dashboard.handle(DashboardAction.OPEN)
@@ -111,7 +118,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(dashboard.snapshot.notice, "")
 
     def test_refresh_notice_clears_when_refresh_completes(self) -> None:
-        dashboard = Dashboard(UI(), Source(Inventory((), ())), ignore_open)
+        dashboard = Dashboard(UI(), Source(Inventory((), ())))
         dashboard.handle(DashboardAction.REFRESH)
 
         finish_refresh(dashboard)
@@ -121,7 +128,7 @@ class DashboardTests(unittest.TestCase):
     def test_navigation_preserves_selection_after_inventory_reorders(self) -> None:
         first = session()
         second = session(terminal_id="terminal-b", pane_id="pane-b", title="Second")
-        dashboard = Dashboard(UI(), Source(Inventory((), ())), ignore_open)
+        dashboard = Dashboard(UI(), Source(Inventory((), ())))
         dashboard.catalog.refresh([first, second])
 
         dashboard.handle(DashboardAction.NEXT)
@@ -137,13 +144,16 @@ class DashboardTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        class DelayedSource:
+        class DelayedSource(Source):
+            def __init__(self) -> None:
+                super().__init__(Inventory((), ()))
+
             def inventory(self) -> Inventory:
                 started.set()
                 release.wait(2)
                 return Inventory((), ())
 
-        dashboard = Dashboard(UI(), DelayedSource(), ignore_open)
+        dashboard = Dashboard(UI(), DelayedSource())
         begin = time.monotonic()
         dashboard.tick()
         self.assertTrue(started.wait(1))
@@ -154,7 +164,10 @@ class DashboardTests(unittest.TestCase):
     def test_run_presents_for_input_actions_but_not_timeouts(self) -> None:
         release = threading.Event()
 
-        class DelayedSource:
+        class DelayedSource(Source):
+            def __init__(self) -> None:
+                super().__init__(Inventory((), ()))
+
             def inventory(self) -> Inventory:
                 release.wait(2)
                 return Inventory((), ())
@@ -167,7 +180,7 @@ class DashboardTests(unittest.TestCase):
                 DashboardAction.QUIT,
             ]
         )
-        dashboard = Dashboard(ui, DelayedSource(), ignore_open)
+        dashboard = Dashboard(ui, DelayedSource())
 
         dashboard.run()
         release.set()

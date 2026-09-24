@@ -1,9 +1,10 @@
-"""The sole boundary for Herdr discovery, requests, and JSON normalization."""
+"""The sole boundary for Herdr discovery, requests, and terminal handoff."""
 
 import json
 import os
 import socket
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -12,6 +13,10 @@ from .contracts import Inventory, Session, SessionStatus
 
 JsonObject = Mapping[str, Any]
 RunCommand = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+RunAttached = Callable[
+    [Sequence[str], Mapping[str, str]], subprocess.CompletedProcess[str]
+]
+Request = Callable[[str, str, JsonObject], JsonObject]
 
 
 class HerdrError(Exception):
@@ -32,6 +37,20 @@ def _default_run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=5,
     )
+
+
+def _default_run_attached(
+    command: Sequence[str],
+    environment: Mapping[str, str],
+) -> subprocess.CompletedProcess[str]:
+    # Only stderr is captured; stdin and stdout stay on the operator's terminal.
+    with tempfile.TemporaryFile() as errors:
+        returncode = subprocess.run(
+            command, env=environment, stderr=errors, check=False
+        ).returncode
+        errors.seek(0)
+        message = errors.read().decode(errors="replace").strip()
+    return subprocess.CompletedProcess(command, returncode, None, message)
 
 
 def _string(record: JsonObject, key: str, default: str = "") -> str:
@@ -84,13 +103,13 @@ def _server(record: JsonObject) -> _Server | None:
     return _Server(name, socket_path)
 
 
-def _request(socket_path: str, method: str) -> JsonObject:
+def _request(socket_path: str, method: str, params: JsonObject) -> JsonObject:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(5)
             connection.connect(socket_path)
             request = (
-                json.dumps({"id": "herdr-nav", "method": method, "params": {}})
+                json.dumps({"id": "herdr-nav", "method": method, "params": params})
                 .encode()
                 + b"\n"
             )
@@ -110,19 +129,21 @@ def _request(socket_path: str, method: str) -> JsonObject:
 
 
 class HerdrClient:
-    """Discover and list local Herdr sessions using explicit server identities."""
+    """Discover local Herdr sessions and hand the terminal to one of them."""
 
     def __init__(
         self,
         binary: str,
         server_name: str | None = None,
         run_command: RunCommand = _default_run,
-        request: Callable[[str, str], JsonObject] = _request,
+        request: Request = _request,
+        run_attached: RunAttached = _default_run_attached,
     ) -> None:
         self._binary = binary
         self._server_name = server_name
         self._run_command = run_command
         self._request = request
+        self._run_attached = run_attached
 
     def inventory(self) -> Inventory:
         """List sessions, retaining healthy-server data when another server fails."""
@@ -130,7 +151,7 @@ class HerdrClient:
         errors: list[str] = []
         for server in self._servers():
             try:
-                result = self._request(server.socket_path, "agent.list")
+                result = self._request(server.socket_path, "agent.list", {})
                 records = result.get("agents")
                 if not isinstance(records, list):
                     raise HerdrError("agent.list response is missing an agents list")
@@ -143,6 +164,32 @@ class HerdrClient:
             except HerdrError as error:
                 errors.append(f"{server.name}: {error}")
         return Inventory(tuple(sessions), tuple(errors))
+
+    def attach(self, session: Session) -> None:
+        """Give the calling terminal to the session until the operator detaches.
+
+        Takes control from any other viewer. Returns when the operator presses
+        Ctrl+b q; the session keeps running.
+        """
+        result = self._request(
+            session.socket_path, "pane.get", {"pane_id": session.pane_id}
+        )
+        pane = result.get("pane")
+        if not isinstance(pane, dict):
+            raise HerdrError("pane.get response is missing a pane object")
+        if _string(pane, "terminal_id") != session.terminal_id:
+            raise HerdrError("Session changed; refresh and select it again")
+        # Herdr rejects the terminal id when it follows --takeover.
+        command = (
+            self._binary, "terminal", "attach", session.terminal_id, "--takeover"
+        )
+        environment = {**os.environ, "HERDR_SOCKET_PATH": session.socket_path}
+        try:
+            completed = self._run_attached(command, environment)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise HerdrError(str(error)) from error
+        if completed.returncode:
+            raise HerdrError(completed.stderr or "Herdr attach failed")
 
     def _servers(self) -> tuple[_Server, ...]:
         try:

@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Protocol
@@ -44,11 +45,15 @@ class DashboardUI(Protocol):
 
     def read_action(self) -> DashboardAction: ...
 
+    def suspended(self) -> AbstractContextManager[None]: ...
 
-class InventorySource(Protocol):
-    """Source used by the background inventory poller."""
+
+class SessionSource(Protocol):
+    """Where the dashboard lists sessions and hands the terminal to one."""
 
     def inventory(self) -> Inventory: ...
+
+    def attach(self, session: Session) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -63,7 +68,7 @@ class Dashboard:
     def __init__(
         self,
         ui: DashboardUI,
-        source: InventorySource,
+        source: SessionSource,
         *,
         poll_interval: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
@@ -152,8 +157,16 @@ class Dashboard:
             self.notice = "Refreshing…"
             self._notice_clears_on_refresh = True
         elif action is DashboardAction.OPEN and self.catalog.selected is not None:
-            self.notice = "Attachment arrives in the next layer"
+            self._open(self.catalog.selected)
         return True
+
+    def _open(self, session: Session) -> None:
+        try:
+            with self.ui.suspended():
+                self.source.attach(session)
+        except (HerdrError, OSError) as error:
+            self.notice = f"Could not open {session.pane_id}: {error}"
+        self._next_poll = 0.0
 
     def run(self) -> None:
         """Run the dashboard until the operator quits."""

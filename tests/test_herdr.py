@@ -7,8 +7,20 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from herdrnav.contracts import SessionStatus
+from herdrnav.contracts import Session, SessionStatus
 from herdrnav.herdr import HerdrClient, HerdrError
+
+SESSION = Session(
+    "/work.sock",
+    "work",
+    "terminal",
+    "pane",
+    "workspace",
+    "codex",
+    SessionStatus.READY,
+    "Task",
+    "/repo",
+)
 
 
 def completed(payload: str) -> subprocess.CompletedProcess[str]:
@@ -20,7 +32,7 @@ class HerdrClientTests(unittest.TestCase):
     def test_normalizes_session_and_stable_identity(self) -> None:
         payload = '{"sessions": [{"name": "work", "socket_path": "/work.sock", "running": true}]}'
 
-        def request(_path: str, _method: str) -> dict[str, object]:
+        def request(_path: str, _method: str, _params: object) -> dict[str, object]:
             return {"agents": [{"terminal_id": "terminal", "pane_id": "pane", "agent_status": "idle", "title": "Task", "foreground_cwd": "/repo"}]}
 
         inventory = HerdrClient(
@@ -36,7 +48,7 @@ class HerdrClientTests(unittest.TestCase):
         inventory = HerdrClient(
             "herdr",
             run_command=lambda _command: completed(payload),
-            request=lambda _path, _method: {
+            request=lambda _path, _method, _params: {
                 "agents": [{"terminal_id": "terminal", "pane_id": "pane", "agent_status": "paused"}]
             },
         ).inventory()
@@ -47,7 +59,7 @@ class HerdrClientTests(unittest.TestCase):
         inventory = HerdrClient(
             "herdr",
             run_command=lambda _command: completed(payload),
-            request=lambda _path, _method: {"agents": [{"pane_id": "pane"}]},
+            request=lambda _path, _method, _params: {"agents": [{"pane_id": "pane"}]},
         ).inventory()
         self.assertEqual(inventory.sessions, ())
         self.assertEqual(inventory.errors, ("work: agent record is missing terminal_id or pane_id",))
@@ -55,7 +67,7 @@ class HerdrClientTests(unittest.TestCase):
     def test_keeps_successful_server_sessions_when_another_server_fails(self) -> None:
         payload = '{"sessions": [{"name": "good", "socket_path": "/good.sock", "running": true}, {"name": "bad", "socket_path": "/bad.sock", "running": true}]}'
 
-        def request(path: str, _method: str) -> dict[str, object]:
+        def request(path: str, _method: str, _params: object) -> dict[str, object]:
             if path == "/bad.sock":
                 return {"agents": "not-a-list"}
             return {"agents": [{"terminal_id": "terminal", "pane_id": "pane"}]}
@@ -73,3 +85,53 @@ class HerdrClientTests(unittest.TestCase):
             HerdrError, "running session record is missing name or socket_path"
         ):
             client.inventory()
+
+
+class HerdrAttachTests(unittest.TestCase):
+    def test_attach_runs_herdr_attach_against_the_session_server(self) -> None:
+        requests: list[tuple[str, str, object]] = []
+        runs: list[tuple[tuple[str, ...], dict[str, str]]] = []
+
+        def request(path: str, method: str, params: object) -> dict[str, object]:
+            requests.append((path, method, params))
+            return {"pane": {"pane_id": "pane", "terminal_id": "terminal"}}
+
+        def run_attached(command, environment):
+            runs.append((tuple(command), dict(environment)))
+            return subprocess.CompletedProcess(command, 0, None, "")
+
+        HerdrClient("herdr", request=request, run_attached=run_attached).attach(SESSION)
+
+        self.assertEqual(requests, [("/work.sock", "pane.get", {"pane_id": "pane"})])
+        command, environment = runs[0]
+        self.assertEqual(
+            command, ("herdr", "terminal", "attach", "terminal", "--takeover")
+        )
+        self.assertEqual(environment["HERDR_SOCKET_PATH"], "/work.sock")
+
+    def test_attach_rejects_a_pane_that_now_shows_another_terminal(self) -> None:
+        def run_attached(command, _environment):
+            raise AssertionError("attach must not start for a stale session")
+
+        client = HerdrClient(
+            "herdr",
+            request=lambda _path, _method, _params: {
+                "pane": {"pane_id": "pane", "terminal_id": "replacement"}
+            },
+            run_attached=run_attached,
+        )
+        with self.assertRaisesRegex(HerdrError, "Session changed"):
+            client.attach(SESSION)
+
+    def test_attach_reports_herdr_failure_message(self) -> None:
+        client = HerdrClient(
+            "herdr",
+            request=lambda _path, _method, _params: {
+                "pane": {"pane_id": "pane", "terminal_id": "terminal"}
+            },
+            run_attached=lambda command, _environment: subprocess.CompletedProcess(
+                command, 1, None, "terminal attach failed: terminal not found"
+            ),
+        )
+        with self.assertRaisesRegex(HerdrError, "terminal not found"):
+            client.attach(SESSION)

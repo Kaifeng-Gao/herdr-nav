@@ -6,7 +6,8 @@ import curses
 import os
 import sys
 import termios
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Literal, TypeAlias
@@ -17,6 +18,7 @@ from .dashboard import DashboardAction, DashboardSnapshot
 _BEGIN_UPDATE = b"\x1b[?2026h"
 _END_UPDATE = b"\x1b[?2026l"
 _RESET_MODES = b"\x1b[0m\x1b[?25h"
+_RESUME_SCREEN = b"\x1b[?1049h\x1b[?25l"
 
 _TITLE_ROW = 1
 _SUMMARY_ROW = 2
@@ -162,6 +164,23 @@ class TerminalUI:
             return DashboardAction.OPEN
         return DashboardAction.REDRAW
 
+    @contextmanager
+    def suspended(self) -> Iterator[None]:
+        """Lend the terminal to another program without leaving the alternate screen.
+
+        The dashboard is fully redrawn on the next present.
+        """
+        curses.def_prog_mode()
+        curses.reset_shell_mode()
+        try:
+            yield
+        finally:
+            # curses can't track the program's screen switch or cursor changes.
+            sys.stdout.buffer.write(_RESUME_SCREEN)
+            sys.stdout.buffer.flush()
+            curses.reset_prog_mode()
+            self._screen.clearok(True)
+
     def present(self, snapshot: DashboardSnapshot) -> None:
         """Resize and atomically present one dashboard snapshot."""
         width, height = self._terminal_size
@@ -278,7 +297,7 @@ class TerminalUI:
             self._screen,
             help_row,
             2,
-            "↑↓ / j k select · → open · r refresh · q quit",
+            "↑↓ / j k select · → open (ctrl+b q returns) · r refresh · q quit",
             self._palette["muted"],
         )
 

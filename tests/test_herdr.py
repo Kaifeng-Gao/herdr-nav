@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from herdrnav.contracts import Session, SessionStatus
-from herdrnav.herdr import HerdrClient, HerdrError
+from herdrnav.herdr import HerdrClient, HerdrError, _without_screen_switches
 
 SESSION = Session(
     "/work.sock",
@@ -135,3 +135,23 @@ class HerdrAttachTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(HerdrError, "terminal not found"):
             client.attach(SESSION)
+
+
+class ScreenSwitchFilterTests(unittest.TestCase):
+    def test_drops_alternate_screen_switches_and_keeps_other_output(self) -> None:
+        output, pending = _without_screen_switches(
+            b"\x1b[?1049h\x1b[?2026hframe\x1b[?2026l\x1b[?1049l\x1b[?25h"
+        )
+        self.assertEqual(output, b"\x1b[?2026hframe\x1b[?2026l\x1b[?25h")
+        self.assertEqual(pending, b"")
+
+    def test_holds_back_a_switch_split_across_reads(self) -> None:
+        output, pending = _without_screen_switches(b"frame\x1b[?10")
+        self.assertEqual((output, pending), (b"frame", b"\x1b[?10"))
+
+        output, pending = _without_screen_switches(pending + b"49lafter")
+        self.assertEqual((output, pending), (b"after", b""))
+
+    def test_passes_through_similar_sequences(self) -> None:
+        output, _ = _without_screen_switches(b"\x1b[?1000h\x1b[?104")
+        self.assertEqual(output, b"\x1b[?1000h")

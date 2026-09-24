@@ -1,12 +1,20 @@
 """The sole boundary for Herdr discovery, requests, and terminal handoff."""
 
+import fcntl
 import json
 import os
+import pty
+import select
 import socket
 import subprocess
+import sys
 import tempfile
+import termios
+import tty
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
+from signal import SIGWINCH
 from typing import Any
 
 from .contracts import Inventory, Session, SessionStatus
@@ -17,6 +25,10 @@ RunAttached = Callable[
     [Sequence[str], Mapping[str, str]], subprocess.CompletedProcess[str]
 ]
 Request = Callable[[str, str, JsonObject], JsonObject]
+
+_RESIZE_CHECK_SECONDS = 0.1
+_SCREEN_SWITCH_PREFIX = b"\x1b[?1049"
+_SCREEN_SWITCHES = (_SCREEN_SWITCH_PREFIX + b"h", _SCREEN_SWITCH_PREFIX + b"l")
 
 
 class HerdrError(Exception):
@@ -39,15 +51,101 @@ def _default_run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _without_screen_switches(data: bytes) -> tuple[bytes, bytes]:
+    """Drop alternate-screen switches, holding back a switch cut off at the end."""
+    for switch in _SCREEN_SWITCHES:
+        data = data.replace(switch, b"")
+    for length in range(len(_SCREEN_SWITCH_PREFIX), 0, -1):
+        if data.endswith(_SCREEN_SWITCH_PREFIX[:length]):
+            return data[:-length], data[-length:]
+    return data, b""
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(descriptor, view) :]
+
+
+def _relay(
+    operator_in: int,
+    operator_out: int,
+    controller: int,
+    sync_window_size: Callable[[], None],
+) -> None:
+    sources = [operator_in, controller]
+    pending = b""
+    while True:
+        # Resizes are polled because a SIGWINCH handler would replace curses' own.
+        readable, _, _ = select.select(sources, [], [], _RESIZE_CHECK_SECONDS)
+        sync_window_size()
+        if controller in readable:
+            try:
+                data = os.read(controller, 65536)
+            except OSError:
+                # Reading the controller fails with EIO once Herdr exits.
+                return
+            if not data:
+                return
+            output, pending = _without_screen_switches(pending + data)
+            _write_all(operator_out, output)
+        if operator_in in readable:
+            data = os.read(operator_in, 65536)
+            if data:
+                _write_all(controller, data)
+            else:
+                sources.remove(operator_in)
+
+
+def _stop(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is None:
+        process.terminate()
+        process.wait()
+
+
 def _default_run_attached(
     command: Sequence[str],
     environment: Mapping[str, str],
 ) -> subprocess.CompletedProcess[str]:
-    # Only stderr is captured; stdin and stdout stay on the operator's terminal.
-    with tempfile.TemporaryFile() as errors:
-        returncode = subprocess.run(
-            command, env=environment, stderr=errors, check=False
-        ).returncode
+    # Herdr gets a private terminal so its screen switches never reach the operator's.
+    operator_in, operator_out = sys.stdin.fileno(), sys.stdout.fileno()
+    controller, herdr_terminal = pty.openpty()
+    window_size = b""
+
+    with ExitStack() as cleanup:
+        cleanup.callback(os.close, controller)
+        errors = cleanup.enter_context(tempfile.TemporaryFile())
+        try:
+            window_size = fcntl.ioctl(operator_out, termios.TIOCGWINSZ, bytes(8))
+            fcntl.ioctl(controller, termios.TIOCSWINSZ, window_size)
+            process = subprocess.Popen(
+                command,
+                env=environment,
+                stdin=herdr_terminal,
+                stdout=herdr_terminal,
+                stderr=errors,
+                start_new_session=True,
+            )
+        finally:
+            os.close(herdr_terminal)
+        cleanup.callback(_stop, process)
+
+        def sync_window_size() -> None:
+            nonlocal window_size
+            size = fcntl.ioctl(operator_out, termios.TIOCGWINSZ, bytes(8))
+            if size != window_size:
+                window_size = size
+                fcntl.ioctl(controller, termios.TIOCSWINSZ, size)
+                # Outside the foreground group, Herdr may not get the kernel's SIGWINCH.
+                process.send_signal(SIGWINCH)
+
+        operator_mode = termios.tcgetattr(operator_in)
+        cleanup.callback(
+            termios.tcsetattr, operator_in, termios.TCSADRAIN, operator_mode
+        )
+        tty.setraw(operator_in)
+        _relay(operator_in, operator_out, controller, sync_window_size)
+        returncode = process.wait()
         errors.seek(0)
         message = errors.read().decode(errors="replace").strip()
     return subprocess.CompletedProcess(command, returncode, None, message)

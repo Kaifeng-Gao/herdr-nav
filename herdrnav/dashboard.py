@@ -7,24 +7,46 @@ import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from enum import Enum, auto
-from typing import Generic, Protocol, TypeVar, cast
+from typing import Generic, Protocol, TypeAlias, TypeVar, cast
 
 from .catalog import Catalog
 from .contracts import Inventory, Session
 from .herdr import HerdrError
 
 
-class DashboardAction(Enum):
-    """Terminal-independent input understood by the dashboard."""
+@dataclass(frozen=True)
+class Timeout:
+    """No input arrived before the UI stopped waiting."""
 
-    TIMEOUT = auto()
-    REDRAW = auto()
-    PREVIOUS = auto()
-    NEXT = auto()
-    REFRESH = auto()
-    OPEN = auto()
-    QUIT = auto()
+
+@dataclass(frozen=True)
+class Redraw:
+    """Input that only needs the dashboard repainted."""
+
+
+@dataclass(frozen=True)
+class Previous:
+    """Operator request to select the previous agent."""
+
+
+@dataclass(frozen=True)
+class Next:
+    """Operator request to select the next agent."""
+
+
+@dataclass(frozen=True)
+class Refresh:
+    """Operator request to reload inventory now."""
+
+
+@dataclass(frozen=True)
+class Open:
+    """Operator request to hand the terminal to the selected agent."""
+
+
+@dataclass(frozen=True)
+class Quit:
+    """Operator request to leave the dashboard."""
 
 
 @dataclass(frozen=True)
@@ -32,6 +54,12 @@ class Launch:
     """Operator request to start command as a new agent."""
 
     command: str
+
+
+# Terminal-independent input understood by the dashboard.
+DashboardAction: TypeAlias = (
+    Timeout | Redraw | Previous | Next | Refresh | Open | Quit | Launch
+)
 
 
 @dataclass(frozen=True)
@@ -49,7 +77,7 @@ class DashboardUI(Protocol):
 
     def present(self, snapshot: DashboardSnapshot) -> None: ...
 
-    def read_action(self) -> DashboardAction | Launch: ...
+    def read_action(self) -> DashboardAction: ...
 
     def suspended(self) -> AbstractContextManager[None]: ...
 
@@ -181,24 +209,25 @@ class Dashboard:
         self.notice = f"Started {launch.command} in {session.pane_id}"
         self._next_poll = 0.0
 
-    def handle(self, action: DashboardAction | Launch) -> bool:
+    def handle(self, action: DashboardAction) -> bool:
         """Apply one semantic action and return whether the UI should continue."""
         self.notice = ""
         self._notice_clears_on_refresh = False
-        if action is DashboardAction.QUIT:
-            return False
-        if isinstance(action, Launch):
-            self._start_launch(action.command)
-        elif action is DashboardAction.PREVIOUS:
-            self.catalog.select_next(-1)
-        elif action is DashboardAction.NEXT:
-            self.catalog.select_next(1)
-        elif action is DashboardAction.REFRESH:
-            self._next_poll = 0.0
-            self.notice = "Refreshing…"
-            self._notice_clears_on_refresh = True
-        elif action is DashboardAction.OPEN and self.catalog.selected is not None:
-            self._open(self.catalog.selected)
+        match action:
+            case Quit():
+                return False
+            case Launch(command):
+                self._start_launch(command)
+            case Previous():
+                self.catalog.select_next(-1)
+            case Next():
+                self.catalog.select_next(1)
+            case Refresh():
+                self._next_poll = 0.0
+                self.notice = "Refreshing…"
+                self._notice_clears_on_refresh = True
+            case Open() if self.catalog.selected is not None:
+                self._open(self.catalog.selected)
         return True
 
     def _start_launch(self, command: str) -> None:
@@ -225,7 +254,7 @@ class Dashboard:
                 self.ui.present(self.snapshot)
                 repaint = False
             action = self.ui.read_action()
-            if action is DashboardAction.TIMEOUT:
+            if isinstance(action, Timeout):
                 continue
             if not self.handle(action):
                 return

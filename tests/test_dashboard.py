@@ -10,7 +10,18 @@ from contextlib import contextmanager
 from dataclasses import replace
 
 from herdrnav.contracts import Inventory, Session, SessionStatus
-from herdrnav.dashboard import Dashboard, DashboardAction, DashboardSnapshot, Launch
+from herdrnav.dashboard import (
+    Dashboard,
+    DashboardAction,
+    DashboardSnapshot,
+    Launch,
+    Next,
+    Open,
+    Quit,
+    Redraw,
+    Refresh,
+    Timeout,
+)
 from herdrnav.herdr import HerdrError
 
 
@@ -111,7 +122,7 @@ class DashboardTests(unittest.TestCase):
         dashboard = Dashboard(ui, source)
         finish_refresh(dashboard)
 
-        self.assertTrue(dashboard.handle(DashboardAction.OPEN))
+        self.assertTrue(dashboard.handle(Open()))
 
         self.assertEqual(source.attached, [expected])
         self.assertEqual(ui.events, ["suspend", "attach", "resume"])
@@ -127,7 +138,7 @@ class DashboardTests(unittest.TestCase):
         dashboard = Dashboard(ui, source)
         finish_refresh(dashboard)
 
-        dashboard.handle(DashboardAction.OPEN)
+        dashboard.handle(Open())
         finish_refresh(dashboard)
 
         self.assertEqual(ui.events, ["suspend", "resume"])
@@ -135,12 +146,12 @@ class DashboardTests(unittest.TestCase):
             dashboard.snapshot.notice,
             "Could not open pane-a: Session changed; refresh and select it again",
         )
-        dashboard.handle(DashboardAction.REDRAW)
+        dashboard.handle(Redraw())
         self.assertEqual(dashboard.snapshot.notice, "")
 
     def test_refresh_notice_clears_when_refresh_completes(self) -> None:
         dashboard = Dashboard(UI(), Source(Inventory((), ())))
-        dashboard.handle(DashboardAction.REFRESH)
+        dashboard.handle(Refresh())
 
         finish_refresh(dashboard)
 
@@ -152,7 +163,7 @@ class DashboardTests(unittest.TestCase):
         dashboard = Dashboard(UI(), Source(Inventory((), ())))
         dashboard.catalog.refresh([first, second])
 
-        dashboard.handle(DashboardAction.NEXT)
+        dashboard.handle(Next())
         dashboard.catalog.refresh(
             [replace(second, status=SessionStatus.WORKING), first]
         )
@@ -178,7 +189,7 @@ class DashboardTests(unittest.TestCase):
         begin = time.monotonic()
         dashboard.tick()
         self.assertTrue(started.wait(1))
-        self.assertFalse(dashboard.handle(DashboardAction.QUIT))
+        self.assertFalse(dashboard.handle(Quit()))
         self.assertLess(time.monotonic() - begin, 1)
         release.set()
 
@@ -195,10 +206,10 @@ class DashboardTests(unittest.TestCase):
 
         ui = UI(
             [
-                DashboardAction.TIMEOUT,
-                DashboardAction.REDRAW,
-                DashboardAction.REDRAW,
-                DashboardAction.QUIT,
+                Timeout(),
+                Redraw(),
+                Redraw(),
+                Quit(),
             ]
         )
         dashboard = Dashboard(ui, DelayedSource())
@@ -219,7 +230,7 @@ class DashboardLaunchTests(unittest.TestCase):
 
         dashboard.handle(Launch("claude"))
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
-        dashboard.handle(DashboardAction.REDRAW)
+        dashboard.handle(Redraw())
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
         source.value = Inventory((existing, source.launch_result), ())
         source.launch_gate.set()
@@ -252,7 +263,7 @@ class DashboardLaunchTests(unittest.TestCase):
             "Could not start claud: the command exited before Herdr detected an agent",
         )
         self.assertEqual(source.launches, ["claud"])
-        dashboard.handle(DashboardAction.REDRAW)
+        dashboard.handle(Redraw())
         self.assertEqual(dashboard.snapshot.notice, "")
 
     def test_a_second_launch_waits_for_the_first(self) -> None:

@@ -13,7 +13,18 @@ from types import TracebackType
 from typing import Literal, TypeAlias
 
 from .contracts import Session, SessionStatus
-from .dashboard import DashboardAction, DashboardSnapshot, Launch
+from .dashboard import (
+    DashboardAction,
+    DashboardSnapshot,
+    Launch,
+    Next,
+    Open,
+    Previous,
+    Quit,
+    Redraw,
+    Refresh,
+    Timeout,
+)
 
 _BEGIN_UPDATE = b"\x1b[?2026h"
 _END_UPDATE = b"\x1b[?2026l"
@@ -155,42 +166,42 @@ class TerminalUI:
         size = os.get_terminal_size(sys.stdout.fileno())
         return size.columns, size.lines
 
-    def read_action(self) -> DashboardAction | Launch:
+    def read_action(self) -> DashboardAction:
         """Translate one curses input into a dashboard action."""
         try:
             key = self._screen.get_wch()
         except curses.error:
-            return DashboardAction.TIMEOUT
+            return Timeout()
         if self._draft is not None:
             return self._edit_draft(key)
         if key == "\t":
             self._draft = ""
-            return DashboardAction.REDRAW
+            return Redraw()
         if key in ("q", "Q"):
-            return DashboardAction.QUIT
+            return Quit()
         if key in (curses.KEY_UP, "k"):
-            return DashboardAction.PREVIOUS
+            return Previous()
         if key in (curses.KEY_DOWN, "j"):
-            return DashboardAction.NEXT
+            return Next()
         if key in ("r", "R"):
-            return DashboardAction.REFRESH
+            return Refresh()
         if key == curses.KEY_RIGHT:
-            return DashboardAction.OPEN
-        return DashboardAction.REDRAW
+            return Open()
+        return Redraw()
 
-    def _edit_draft(self, key: int | str) -> DashboardAction | Launch:
+    def _edit_draft(self, key: int | str) -> DashboardAction:
         draft = self._draft or ""
         if key in _ENTER_KEYS:
             self._draft = None
             command = draft.strip()
-            return Launch(command) if command else DashboardAction.REDRAW
+            return Launch(command) if command else Redraw()
         if key in ("\x1b", "\t"):
             self._draft = None
         elif key in _BACKSPACE_KEYS:
             self._draft = draft[:-1]
         elif isinstance(key, str) and key.isprintable():
             self._draft = draft + key
-        return DashboardAction.REDRAW
+        return Redraw()
 
     @contextmanager
     def suspended(self) -> Iterator[None]:

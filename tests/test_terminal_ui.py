@@ -10,7 +10,17 @@ from dataclasses import replace
 from unittest.mock import Mock, patch
 
 from herdrnav.contracts import Session, SessionStatus
-from herdrnav.dashboard import DashboardAction, DashboardSnapshot, Launch
+from herdrnav.dashboard import (
+    DashboardSnapshot,
+    Launch,
+    Next,
+    Open,
+    Previous,
+    Quit,
+    Redraw,
+    Refresh,
+    Timeout,
+)
 from herdrnav.terminal_ui import TerminalUI
 
 PALETTE = {
@@ -173,13 +183,13 @@ class TerminalUITests(unittest.TestCase):
 
     def test_read_action_translates_keys_and_timeouts(self) -> None:
         cases = (
-            ("q", DashboardAction.QUIT),
-            (curses.KEY_UP, DashboardAction.PREVIOUS),
-            ("j", DashboardAction.NEXT),
-            ("r", DashboardAction.REFRESH),
-            (curses.KEY_RIGHT, DashboardAction.OPEN),
-            (curses.KEY_RESIZE, DashboardAction.REDRAW),
-            ("x", DashboardAction.REDRAW),
+            ("q", Quit()),
+            (curses.KEY_UP, Previous()),
+            ("j", Next()),
+            ("r", Refresh()),
+            (curses.KEY_RIGHT, Open()),
+            (curses.KEY_RESIZE, Redraw()),
+            ("x", Redraw()),
         )
         ui = TerminalUI.__new__(TerminalUI)
         ui._screen = Mock()
@@ -189,7 +199,7 @@ class TerminalUITests(unittest.TestCase):
                 ui._screen.get_wch.return_value = key
                 self.assertEqual(ui.read_action(), expected)
         ui._screen.get_wch.side_effect = curses.error
-        self.assertEqual(ui.read_action(), DashboardAction.TIMEOUT)
+        self.assertEqual(ui.read_action(), Timeout())
 
     def test_tab_composes_a_command_that_enter_submits_as_a_launch(self) -> None:
         ui = rendering_ui(Screen())
@@ -198,7 +208,7 @@ class TerminalUITests(unittest.TestCase):
 
         actions = [ui.read_action() for _ in keys]
 
-        self.assertEqual(actions[:-1], [DashboardAction.REDRAW] * (len(keys) - 1))
+        self.assertEqual(actions[:-1], [Redraw()] * (len(keys) - 1))
         self.assertEqual(actions[-1], Launch("q --resume"))
         self.assertIsNone(ui._draft)
 
@@ -208,10 +218,10 @@ class TerminalUITests(unittest.TestCase):
             with self.subTest(keys=keys):
                 ui._screen.get_wch = Mock(side_effect=keys)
                 actions = [ui.read_action() for _ in keys]
-                self.assertEqual(actions, [DashboardAction.REDRAW] * len(keys))
+                self.assertEqual(actions, [Redraw()] * len(keys))
                 self.assertIsNone(ui._draft)
                 ui._screen.get_wch = Mock(return_value="q")
-                self.assertEqual(ui.read_action(), DashboardAction.QUIT)
+                self.assertEqual(ui.read_action(), Quit())
 
     def test_command_field_replaces_the_status_line_and_keeps_its_end_visible(self) -> None:
         screen = Screen()

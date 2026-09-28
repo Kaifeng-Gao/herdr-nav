@@ -41,6 +41,16 @@ def session(**changes: object) -> Session:
     return replace(baseline, **changes)
 
 
+STARTING = session(
+    terminal_id="terminal-new",
+    pane_id="pane-new",
+    agent="",
+    status=SessionStatus.STARTING,
+    title="claude",
+)
+DETECTED = replace(STARTING, agent="claude", status=SessionStatus.READY)
+
+
 class UI:
     def __init__(self, actions: list[DashboardAction] | None = None) -> None:
         self.actions = iter(actions or [])
@@ -69,12 +79,11 @@ class Source:
         self.value = inventory
         self.attach_error = attach_error
         self.attached: list[Session] = []
-        self.launches: list[str] = []
-        self.launch_result: Session | Exception = session(
-            terminal_id="terminal-new", pane_id="pane-new", agent="claude"
-        )
-        self.launch_gate = threading.Event()
-        self.launch_gate.set()
+        self.started: list[str] = []
+        self.start_result: Session | Exception = STARTING
+        self.detection_gate = threading.Event()
+        self.detection_gate.set()
+        self.detection_error: Exception | None = None
         self.closed: list[Session] = []
         self.close_error: Exception | None = None
 
@@ -91,16 +100,21 @@ class Source:
             raise self.close_error
         self.closed.append(session)
 
-    def launch(self, command: str) -> Session:
-        self.launches.append(command)
-        self.launch_gate.wait(2)
-        if isinstance(self.launch_result, Exception):
-            raise self.launch_result
-        return self.launch_result
+    def start(self, command: str) -> Session:
+        self.started.append(command)
+        if isinstance(self.start_result, Exception):
+            raise self.start_result
+        return self.start_result
+
+    def wait_for_agent(self, session: Session) -> None:
+        self.detection_gate.wait(2)
+        if self.detection_error is not None:
+            raise self.detection_error
 
 
 def finish_refresh(dashboard: Dashboard) -> None:
-    dashboard.tick()
+    if dashboard._refresh is None:
+        dashboard.tick()
     refresh = dashboard._refresh
     if refresh is None:
         raise AssertionError("refresh did not start")
@@ -242,54 +256,115 @@ class DashboardTests(unittest.TestCase):
 
 
 class DashboardLaunchTests(unittest.TestCase):
-    def test_launch_reports_the_new_agent_and_leaves_the_selection_alone(self) -> None:
+    def test_launch_selects_a_starting_row_that_becomes_the_agent(self) -> None:
         existing = session()
         source = Source(Inventory((existing,), ()))
-        source.launch_gate.clear()
+        source.detection_gate.clear()
         dashboard = Dashboard(UI(), source)
         finish_refresh(dashboard)
 
         dashboard.handle(Launch("claude"))
+        self.assertEqual(dashboard.snapshot.sessions, (existing, STARTING))
+        self.assertEqual(dashboard.snapshot.selected, STARTING)
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
-        dashboard.handle(Redraw())
+        dashboard.handle(Refresh())
+        finish_refresh(dashboard)
+        self.assertEqual(dashboard.snapshot.selected, STARTING)
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
-        source.value = Inventory((existing, source.launch_result), ())
-        source.launch_gate.set()
+        source.value = Inventory((existing, DETECTED), ())
+        source.detection_gate.set()
         finish_launch(dashboard)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
-        refresh = dashboard._refresh
-        assert refresh is not None
-        refresh.wait(timeout=1)
-        dashboard.tick()
+        finish_refresh(dashboard)
 
-        self.assertEqual(source.launches, ["claude"])
-        self.assertIn(source.launch_result, dashboard.snapshot.sessions)
-        self.assertEqual(dashboard.snapshot.selected, existing)
+        self.assertEqual(source.started, ["claude"])
+        self.assertEqual(dashboard.snapshot.sessions, (DETECTED, existing))
+        self.assertEqual(dashboard.snapshot.selected, DETECTED)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
+
+    def test_a_refresh_begun_before_detection_cannot_drop_the_new_agent(self) -> None:
+        existing = session()
+        stalled = threading.Event()
+        release = threading.Event()
+
+        class StallingSource(Source):
+            stall = False
+
+            def inventory(self) -> Inventory:
+                reported, stall, self.stall = self.value, self.stall, False
+                if stall:
+                    stalled.set()
+                    release.wait(2)
+                return reported
+
+        source = StallingSource(Inventory((existing,), ()))
+        source.detection_gate.clear()
+        dashboard = Dashboard(UI(), source)
+        finish_refresh(dashboard)
+        dashboard.handle(Launch("claude"))
+
+        source.stall = True
+        dashboard.handle(Refresh())
+        dashboard.tick()
+        self.assertTrue(stalled.wait(1))
+        source.value = Inventory((existing, DETECTED), ())
+        source.detection_gate.set()
+        finish_launch(dashboard)
+        release.set()
+        finish_refresh(dashboard)
+
+        self.assertEqual(dashboard.snapshot.selected, DETECTED)
+
+    def test_a_failed_launch_removes_its_starting_row(self) -> None:
+        existing = session()
+        source = Source(Inventory((existing,), ()))
+        source.detection_error = HerdrError("the command exited before Herdr detected an agent")
+        source.detection_gate.clear()
+        dashboard = Dashboard(UI(), source)
+        finish_refresh(dashboard)
+
+        dashboard.handle(Launch("claud"))
+        self.assertEqual(dashboard.snapshot.sessions, (existing, STARTING))
+        source.detection_gate.set()
+        finish_launch(dashboard)
+        finish_refresh(dashboard)
+
+        self.assertEqual(dashboard.snapshot.sessions, (existing,))
+        self.assertEqual(dashboard.snapshot.selected, existing)
 
     def test_launch_failure_is_shown_until_the_next_action(self) -> None:
         source = Source(Inventory((), ()))
-        source.launch_result = HerdrError("the command exited before Herdr detected an agent")
+        source.detection_error = HerdrError("the command exited before Herdr detected an agent")
         dashboard = Dashboard(UI(), source)
 
         dashboard.handle(Launch("claud"))
         finish_launch(dashboard)
-        refresh = dashboard._refresh
-        assert refresh is not None
-        refresh.wait(timeout=1)
-        dashboard.tick()
+        finish_refresh(dashboard)
 
         self.assertEqual(
             dashboard.snapshot.notice,
             "Could not start claud: the command exited before Herdr detected an agent",
         )
-        self.assertEqual(source.launches, ["claud"])
+        self.assertEqual(source.started, ["claud"])
         dashboard.handle(Redraw())
         self.assertEqual(dashboard.snapshot.notice, "")
 
+    def test_a_command_that_cannot_start_is_reported_at_once(self) -> None:
+        source = Source(Inventory((), ()))
+        source.start_result = HerdrError("No Herdr server is running")
+        dashboard = Dashboard(UI(), source)
+
+        dashboard.handle(Launch("claude"))
+        self.assertEqual(
+            dashboard.snapshot.notice, "Could not start claude: No Herdr server is running"
+        )
+        dashboard.handle(Launch("codex"))
+
+        self.assertEqual(source.started, ["claude", "codex"])
+
     def test_overlapping_refresh_and_launch_notices_keep_their_lifetimes(self) -> None:
         source = Source(Inventory((), ()))
-        source.launch_gate.clear()
+        source.detection_gate.clear()
         dashboard = Dashboard(UI(), source)
         finish_refresh(dashboard)
 
@@ -300,13 +375,10 @@ class DashboardLaunchTests(unittest.TestCase):
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
 
         dashboard.handle(Refresh())
-        source.launch_gate.set()
+        source.detection_gate.set()
         finish_launch(dashboard)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
-        refresh = dashboard._refresh
-        assert refresh is not None
-        refresh.wait(timeout=1)
-        dashboard.tick()
+        finish_refresh(dashboard)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
 
         dashboard.handle(Redraw())
@@ -314,16 +386,16 @@ class DashboardLaunchTests(unittest.TestCase):
 
     def test_a_second_launch_waits_for_the_first(self) -> None:
         source = Source(Inventory((), ()))
-        source.launch_gate.clear()
+        source.detection_gate.clear()
         dashboard = Dashboard(UI(), source)
 
         dashboard.handle(Launch("claude"))
         dashboard.handle(Launch("codex"))
 
         self.assertEqual(dashboard.snapshot.notice, "Wait for claude to start")
-        source.launch_gate.set()
+        source.detection_gate.set()
         finish_launch(dashboard)
-        self.assertEqual(source.launches, ["claude"])
+        self.assertEqual(source.started, ["claude"])
 
 
 class DashboardCloseTests(unittest.TestCase):

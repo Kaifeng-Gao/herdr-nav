@@ -310,7 +310,8 @@ class TerminalUI:
                     curses.A_REVERSE if selected else self._palette["neutral"],
                 )
                 location = os.path.basename(row.session.cwd) or row.session.server_name
-                detail = f"{row.session.agent or 'shell'} · {location}"
+                agent = row.session.agent
+                detail = f"{agent} · {location}" if agent else location
                 _text(
                     self._screen,
                     screen_row,

@@ -138,6 +138,17 @@ class TerminalUITests(unittest.TestCase):
         )
         self.assertEqual(error_style, PALETTE["alert"])
 
+    def test_a_row_without_a_detected_agent_shows_only_its_folder(self) -> None:
+        screen = Screen()
+        ui = rendering_ui(screen)
+        starting = session(agent="", status=SessionStatus.STARTING)
+
+        ui._render(snapshot((starting,), selected=starting))
+
+        rendered = [value for _, value, _ in screen.writes]
+        self.assertIn("project", rendered)
+        self.assertNotIn("shell", "\n".join(rendered))
+
     def test_viewport_moves_only_when_selection_leaves_visible_rows(self) -> None:
         screen = Screen(height=12)
         ui = rendering_ui(screen)

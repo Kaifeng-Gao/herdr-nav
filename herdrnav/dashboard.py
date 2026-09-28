@@ -94,7 +94,9 @@ class SessionSource(Protocol):
 
     def attach(self, session: Session) -> None: ...
 
-    def launch(self, command: str) -> Session: ...
+    def start(self, command: str) -> Session: ...
+
+    def wait_for_agent(self, session: Session) -> None: ...
 
     def close(self, session: Session) -> None: ...
 
@@ -138,8 +140,11 @@ class _Job(Generic[_Result]):
 
 @dataclass(frozen=True)
 class _PendingLaunch:
+    """A started command, and the job waiting for Herdr to detect its agent."""
+
     command: str
-    job: _Job[Session]
+    session: Session
+    job: _Job[None]
 
 
 class Dashboard:
@@ -222,13 +227,16 @@ class Dashboard:
         return self.catalog.sessions != previous_sessions or self.errors != previous_errors
 
     def _finish_launch(self, launch: _PendingLaunch) -> None:
+        self.catalog.release(launch.session)
+        # A refresh already running may predate the agent, and would drop its row.
+        self._refresh = None
+        self._next_poll = 0.0
         try:
-            session = launch.job.result()
+            launch.job.result()
         except (HerdrError, OSError) as error:
             self._outcome = f"Could not start {launch.command}: {error}"
             return
-        self._outcome = f"Started {launch.command} in {session.pane_id}"
-        self._next_poll = 0.0
+        self._outcome = f"Started {launch.command} in {launch.session.pane_id}"
 
     def handle(self, action: DashboardAction) -> bool:
         """Apply one semantic action and return whether the UI should continue."""
@@ -261,8 +269,15 @@ class Dashboard:
         if self._launch is not None:
             self._outcome = f"Wait for {self._launch.command} to start"
             return
-        job = _Job(lambda: self.source.launch(command), "herdr-nav-launch")
-        self._launch = _PendingLaunch(command, job)
+        try:
+            session = self.source.start(command)
+        except (HerdrError, OSError) as error:
+            self._outcome = f"Could not start {command}: {error}"
+            return
+        self.catalog.hold(session)
+        self.catalog.select(session)
+        job = _Job(lambda: self.source.wait_for_agent(session), "herdr-nav-launch")
+        self._launch = _PendingLaunch(command, session, job)
 
     def _open(self, session: Session) -> None:
         try:

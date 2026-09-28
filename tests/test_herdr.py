@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from collections.abc import Callable
+from dataclasses import replace
 from unittest.mock import patch
 
 from herdrnav.contracts import Session, SessionStatus
@@ -210,22 +211,25 @@ def launcher(server: FakeServer) -> HerdrClient:
 
 
 HERE = os.path.realpath(os.getcwd())
+STARTED = replace(
+    SESSION, terminal_id="term-new", pane_id="w1:p2", status=SessionStatus.STARTING
+)
 
 
 @patch.dict(os.environ, {"HERDR_SOCKET_PATH": "", "SHELL": "/bin/zsh"})
 @patch("herdrnav.herdr.time.sleep")
 class HerdrLaunchTests(unittest.TestCase):
-    def test_launch_joins_the_workspace_with_a_pane_in_this_folder(self, _sleep) -> None:
+    def test_start_joins_the_workspace_with_a_pane_in_this_folder(self, _sleep) -> None:
         server = FakeServer(
             pane_list=pane_list(
                 {"pane_id": "w1:p1", "workspace_id": "w1", "cwd": "/elsewhere"},
                 {"pane_id": "w2:p1", "workspace_id": "w2", "cwd": HERE},
             ),
             layout_apply=new_tab(),
-            pane_get=panes(STARTING_PANE, DETECTED_PANE),
+            pane_get=panes(STARTING_PANE),
         )
 
-        launched = launcher(server).launch("claude --resume")
+        started = launcher(server).start("claude --resume")
 
         self.assertEqual(
             server.params("layout.apply"),
@@ -241,10 +245,12 @@ class HerdrLaunchTests(unittest.TestCase):
             },
         )
         self.assertEqual({path for path, _, _ in server.requests}, {"/work.sock"})
-        self.assertEqual(launched.identity, ("/work.sock", "term-new"))
-        self.assertEqual((launched.agent, launched.status), ("claude", SessionStatus.NEEDS_INPUT))
+        self.assertEqual(started.identity, ("/work.sock", "term-new"))
+        self.assertEqual(
+            (started.status, started.title), (SessionStatus.STARTING, "claude --resume")
+        )
 
-    def test_launch_matches_the_folder_through_symlinks(self, _sleep) -> None:
+    def test_start_matches_the_folder_through_symlinks(self, _sleep) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = os.path.join(directory, "repo")
             link = os.path.join(directory, "link")
@@ -254,51 +260,55 @@ class HerdrLaunchTests(unittest.TestCase):
             server = FakeServer(
                 pane_list=pane_list({"pane_id": "w3:p1", "workspace_id": "w3", "cwd": resolved}),
                 layout_apply=new_tab(),
-                pane_get=panes(DETECTED_PANE),
+                pane_get=panes(STARTING_PANE),
             )
 
             with patch("herdrnav.herdr.os.getcwd", return_value=link):
-                launcher(server).launch("codex")
+                launcher(server).start("codex")
 
         self.assertEqual(server.params("layout.apply")["workspace_id"], "w3")
         self.assertEqual(server.params("layout.apply")["root"]["cwd"], resolved)
 
-    def test_launch_creates_a_workspace_when_no_pane_is_in_this_folder(self, _sleep) -> None:
+    def test_start_creates_a_workspace_when_no_pane_is_in_this_folder(self, _sleep) -> None:
         server = FakeServer(
             pane_list=pane_list({"pane_id": "w1:p1", "workspace_id": "w1", "cwd": "/elsewhere"}),
             workspace_create=lambda _params: {"tab": {"tab_id": "w2:t1"}},
             layout_apply=new_tab(),
-            pane_get=panes(DETECTED_PANE),
+            pane_get=panes(STARTING_PANE),
         )
 
-        launcher(server).launch("codex")
+        launcher(server).start("codex")
 
         self.assertEqual(server.params("workspace.create"), {"cwd": HERE, "focus": False})
         self.assertEqual(server.params("layout.apply")["tab_id"], "w2:t1")
         self.assertNotIn("workspace_id", server.params("layout.apply"))
 
-    def test_launch_requires_a_running_server(self, _sleep) -> None:
+    def test_start_requires_a_running_server(self, _sleep) -> None:
         client = HerdrClient(
             "herdr", run_command=lambda _command: completed('{"sessions": []}')
         )
         with self.assertRaisesRegex(HerdrError, "No Herdr server is running"):
-            client.launch("codex")
+            client.start("codex")
 
-    def test_launch_reports_a_command_that_exits_before_detection(self, _sleep) -> None:
+    def test_wait_for_agent_returns_once_herdr_detects_one(self, sleep) -> None:
+        server = FakeServer(pane_get=panes(STARTING_PANE, DETECTED_PANE))
+
+        launcher(server).wait_for_agent(STARTED)
+
+        self.assertEqual(server.requests.count(("/work.sock", "pane.get", {"pane_id": "w1:p2"})), 2)
+        sleep.assert_called_once()
+
+    def test_wait_for_agent_reports_a_command_that_exits_first(self, _sleep) -> None:
         server = FakeServer(
-            pane_list=pane_list({"pane_id": "w1:p1", "workspace_id": "w1", "cwd": HERE}),
-            layout_apply=new_tab(),
             pane_get=panes(
                 STARTING_PANE, HerdrError("pane w1:p2 not found", "pane_not_found")
             ),
         )
         with self.assertRaisesRegex(HerdrError, "^the command exited before Herdr detected an agent$"):
-            launcher(server).launch("claud")
+            launcher(server).wait_for_agent(STARTED)
 
-    def test_launch_closes_the_tab_when_no_agent_is_detected(self, _sleep) -> None:
+    def test_wait_for_agent_closes_the_tab_when_none_is_detected(self, _sleep) -> None:
         server = FakeServer(
-            pane_list=pane_list({"pane_id": "w1:p1", "workspace_id": "w1", "cwd": HERE}),
-            layout_apply=new_tab(),
             pane_get=panes(STARTING_PANE),
             pane_close=lambda _params: {},
         )
@@ -306,7 +316,7 @@ class HerdrLaunchTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 HerdrError, "^Herdr detected no agent within 30 seconds, so its tab was closed$"
             ):
-                launcher(server).launch("top")
+                launcher(server).wait_for_agent(STARTED)
 
         self.assertEqual(server.params("pane.close"), {"pane_id": "w1:p2"})
 

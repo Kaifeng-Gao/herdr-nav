@@ -14,6 +14,7 @@ from typing import Literal, TypeAlias
 
 from .contracts import Session, SessionStatus
 from .dashboard import (
+    Close,
     DashboardAction,
     DashboardSnapshot,
     Launch,
@@ -187,6 +188,8 @@ class TerminalUI:
             return Refresh()
         if key == curses.KEY_RIGHT:
             return Open()
+        if key == "\x18":
+            return Close()
         return Redraw()
 
     def _edit_draft(self, key: int | str) -> DashboardAction:
@@ -327,7 +330,7 @@ class TerminalUI:
         if self._draft is None:
             self._render_status(status_row, snapshot)
             help_text = (
-                "↑↓ select · → open (ctrl+b q returns) · tab new · r refresh · q quit"
+                "↑↓ select · → open (ctrl+b q returns) · tab new · ctrl+x close · q quit"
             )
         else:
             self._render_draft(status_row, self._draft)

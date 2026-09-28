@@ -127,6 +127,28 @@ class HerdrClientTests(unittest.TestCase):
             client.inventory()
 
 
+class HerdrCloseTests(unittest.TestCase):
+    def test_close_closes_the_pane_on_the_session_server(self) -> None:
+        server = FakeServer(
+            pane_get=panes({"pane_id": "pane", "terminal_id": "terminal"}),
+            pane_close=lambda _params: {"type": "ok"},
+        )
+
+        HerdrClient("herdr", request=server).close(SESSION)
+
+        self.assertEqual(
+            server.requests[-1], ("/work.sock", "pane.close", {"pane_id": "pane"})
+        )
+
+    def test_close_leaves_a_pane_that_now_shows_another_terminal(self) -> None:
+        server = FakeServer(
+            pane_get=panes({"pane_id": "pane", "terminal_id": "replacement"})
+        )
+        with self.assertRaisesRegex(HerdrError, "Session changed"):
+            HerdrClient("herdr", request=server).close(SESSION)
+        self.assertNotIn("pane.close", [method for _, method, _ in server.requests])
+
+
 class HerdrAttachTests(unittest.TestCase):
     def test_attach_runs_herdr_attach_against_the_session_server(self) -> None:
         requests: list[tuple[str, str, object]] = []

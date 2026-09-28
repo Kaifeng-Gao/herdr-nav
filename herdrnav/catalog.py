@@ -51,22 +51,34 @@ class Catalog:
         )
 
     def refresh(self, sessions: Iterable[Session]) -> None:
-        """Replace inventory while preserving the selected stable identity."""
+        """Replace inventory while preserving the selected stable identity.
+
+        If the selected session is gone, select the one now in its row.
+        """
+        row = self._selected_row()
         self._sessions = sort_sessions(sessions)
-        if self._selected is None or self.selected is None:
-            self._selected = self._sessions[0].identity if self._sessions else None
+        if self.selected is None:
+            self._selected = (
+                self._sessions[min(row, len(self._sessions) - 1)].identity
+                if self._sessions
+                else None
+            )
 
     def select_next(self, offset: int) -> Session | None:
         """Move selection cyclically by offset and return the newly selected session."""
         if not self._sessions:
             return None
-        index = next(
+        row = (self._selected_row() + offset) % len(self._sessions)
+        self._selected = self._sessions[row].identity
+        return self.selected
+
+    def _selected_row(self) -> int:
+        """Return the selected session's row, or 0 when nothing is selected."""
+        return next(
             (
-                index
-                for index, session in enumerate(self._sessions)
+                row
+                for row, session in enumerate(self._sessions)
                 if session.identity == self._selected
             ),
             0,
         )
-        self._selected = self._sessions[(index + offset) % len(self._sessions)].identity
-        return self.selected

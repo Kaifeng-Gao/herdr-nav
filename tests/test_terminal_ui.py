@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from herdrnav.contracts import Session, SessionStatus
 from herdrnav.dashboard import (
+    Close,
     DashboardSnapshot,
     Launch,
     Next,
@@ -173,6 +174,15 @@ class TerminalUITests(unittest.TestCase):
         self.assertNotIn("First", "\n".join(value for _, value, _ in screen.writes))
         self.assertEqual({y for y, _, _ in screen.writes}, {1, 2, 3, 4})
 
+    def test_key_help_fits_an_80_column_terminal(self) -> None:
+        screen = Screen(width=80)
+        ui = rendering_ui(screen)
+
+        ui._render(snapshot())
+
+        help_row = next(value for y, value, _ in screen.writes if y == screen.height - 1)
+        self.assertTrue(help_row.endswith("q quit"), help_row)
+
     def test_final_row_display_width_error_does_not_escape(self) -> None:
         screen = FinalCellScreen()
         ui = rendering_ui(screen)
@@ -188,6 +198,7 @@ class TerminalUITests(unittest.TestCase):
             ("j", Next()),
             ("r", Refresh()),
             (curses.KEY_RIGHT, Open()),
+            ("\x18", Close()),
             (curses.KEY_RESIZE, Redraw()),
             ("x", Redraw()),
         )

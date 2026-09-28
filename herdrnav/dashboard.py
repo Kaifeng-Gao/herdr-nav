@@ -45,6 +45,11 @@ class Open:
 
 
 @dataclass(frozen=True)
+class Close:
+    """Operator request to stop the selected agent; the first press only asks."""
+
+
+@dataclass(frozen=True)
 class Quit:
     """Operator request to leave the dashboard."""
 
@@ -58,7 +63,7 @@ class Launch:
 
 # Terminal-independent input understood by the dashboard.
 DashboardAction: TypeAlias = (
-    Timeout | Redraw | Previous | Next | Refresh | Open | Quit | Launch
+    Timeout | Redraw | Previous | Next | Refresh | Open | Close | Quit | Launch
 )
 
 
@@ -83,13 +88,15 @@ class DashboardUI(Protocol):
 
 
 class SessionSource(Protocol):
-    """Where the dashboard lists, starts, and opens sessions."""
+    """Where the dashboard lists, starts, opens, and closes sessions."""
 
     def inventory(self) -> Inventory: ...
 
     def attach(self, session: Session) -> None: ...
 
     def launch(self, command: str) -> Session: ...
+
+    def close(self, session: Session) -> None: ...
 
 
 _Result = TypeVar("_Result")
@@ -159,6 +166,8 @@ class Dashboard:
         self._next_poll = 0.0
         self._refresh: _Job[Inventory] | None = None
         self._launch: _PendingLaunch | None = None
+        # The agent a first Close asked about; any other action forgets it.
+        self._armed_close: tuple[str, str] | None = None
 
     @property
     def snapshot(self) -> DashboardSnapshot:
@@ -224,6 +233,7 @@ class Dashboard:
     def handle(self, action: DashboardAction) -> bool:
         """Apply one semantic action and return whether the UI should continue."""
         self._outcome = ""
+        armed_close, self._armed_close = self._armed_close, None
         match action:
             case Quit():
                 return False
@@ -238,6 +248,13 @@ class Dashboard:
                 self._refresh_requested = True
             case Open() if self.catalog.selected is not None:
                 self._open(self.catalog.selected)
+            case Close() if self.catalog.selected is not None:
+                selected = self.catalog.selected
+                if armed_close == selected.identity:
+                    self._close(selected)
+                else:
+                    self._armed_close = selected.identity
+                    self._outcome = f"Press ctrl+x again to close {selected.pane_id}"
         return True
 
     def _start_launch(self, command: str) -> None:
@@ -253,6 +270,15 @@ class Dashboard:
                 self.source.attach(session)
         except (HerdrError, OSError) as error:
             self._outcome = f"Could not open {session.pane_id}: {error}"
+        self._next_poll = 0.0
+
+    def _close(self, session: Session) -> None:
+        try:
+            self.source.close(session)
+        except (HerdrError, OSError) as error:
+            self._outcome = f"Could not close {session.pane_id}: {error}"
+            return
+        self._outcome = f"Closed {session.pane_id}"
         self._next_poll = 0.0
 
     def run(self) -> None:

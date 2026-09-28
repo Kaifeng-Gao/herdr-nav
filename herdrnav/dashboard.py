@@ -227,13 +227,16 @@ class Dashboard:
         return self.catalog.sessions != previous_sessions or self.errors != previous_errors
 
     def _finish_launch(self, launch: _PendingLaunch) -> None:
+        self.catalog.release(launch.session)
+        # A refresh already running may predate the agent, and would drop its row.
+        self._refresh = None
+        self._next_poll = 0.0
         try:
             launch.job.result()
         except (HerdrError, OSError) as error:
             self._outcome = f"Could not start {launch.command}: {error}"
             return
         self._outcome = f"Started {launch.command} in {launch.session.pane_id}"
-        self._next_poll = 0.0
 
     def handle(self, action: DashboardAction) -> bool:
         """Apply one semantic action and return whether the UI should continue."""
@@ -271,6 +274,8 @@ class Dashboard:
         except (HerdrError, OSError) as error:
             self._outcome = f"Could not start {command}: {error}"
             return
+        self.catalog.hold(session)
+        self.catalog.select(session)
         job = _Job(lambda: self.source.wait_for_agent(session), "herdr-nav-launch")
         self._launch = _PendingLaunch(command, session, job)
 

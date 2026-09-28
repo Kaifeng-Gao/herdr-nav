@@ -256,7 +256,7 @@ class DashboardTests(unittest.TestCase):
 
 
 class DashboardLaunchTests(unittest.TestCase):
-    def test_launch_reports_the_new_agent_and_leaves_the_selection_alone(self) -> None:
+    def test_launch_selects_a_starting_row_that_becomes_the_agent(self) -> None:
         existing = session()
         source = Source(Inventory((existing,), ()))
         source.detection_gate.clear()
@@ -264,8 +264,12 @@ class DashboardLaunchTests(unittest.TestCase):
         finish_refresh(dashboard)
 
         dashboard.handle(Launch("claude"))
+        self.assertEqual(dashboard.snapshot.sessions, (existing, STARTING))
+        self.assertEqual(dashboard.snapshot.selected, STARTING)
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
-        dashboard.handle(Redraw())
+        dashboard.handle(Refresh())
+        finish_refresh(dashboard)
+        self.assertEqual(dashboard.snapshot.selected, STARTING)
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
         source.value = Inventory((existing, DETECTED), ())
         source.detection_gate.set()
@@ -274,9 +278,59 @@ class DashboardLaunchTests(unittest.TestCase):
         finish_refresh(dashboard)
 
         self.assertEqual(source.started, ["claude"])
-        self.assertIn(DETECTED, dashboard.snapshot.sessions)
-        self.assertEqual(dashboard.snapshot.selected, existing)
+        self.assertEqual(dashboard.snapshot.sessions, (DETECTED, existing))
+        self.assertEqual(dashboard.snapshot.selected, DETECTED)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
+
+    def test_a_refresh_begun_before_detection_cannot_drop_the_new_agent(self) -> None:
+        existing = session()
+        stalled = threading.Event()
+        release = threading.Event()
+
+        class StallingSource(Source):
+            stall = False
+
+            def inventory(self) -> Inventory:
+                reported, stall, self.stall = self.value, self.stall, False
+                if stall:
+                    stalled.set()
+                    release.wait(2)
+                return reported
+
+        source = StallingSource(Inventory((existing,), ()))
+        source.detection_gate.clear()
+        dashboard = Dashboard(UI(), source)
+        finish_refresh(dashboard)
+        dashboard.handle(Launch("claude"))
+
+        source.stall = True
+        dashboard.handle(Refresh())
+        dashboard.tick()
+        self.assertTrue(stalled.wait(1))
+        source.value = Inventory((existing, DETECTED), ())
+        source.detection_gate.set()
+        finish_launch(dashboard)
+        release.set()
+        finish_refresh(dashboard)
+
+        self.assertEqual(dashboard.snapshot.selected, DETECTED)
+
+    def test_a_failed_launch_removes_its_starting_row(self) -> None:
+        existing = session()
+        source = Source(Inventory((existing,), ()))
+        source.detection_error = HerdrError("the command exited before Herdr detected an agent")
+        source.detection_gate.clear()
+        dashboard = Dashboard(UI(), source)
+        finish_refresh(dashboard)
+
+        dashboard.handle(Launch("claud"))
+        self.assertEqual(dashboard.snapshot.sessions, (existing, STARTING))
+        source.detection_gate.set()
+        finish_launch(dashboard)
+        finish_refresh(dashboard)
+
+        self.assertEqual(dashboard.snapshot.sessions, (existing,))
+        self.assertEqual(dashboard.snapshot.selected, existing)
 
     def test_launch_failure_is_shown_until_the_next_action(self) -> None:
         source = Source(Inventory((), ()))

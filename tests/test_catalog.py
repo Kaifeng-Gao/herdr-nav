@@ -56,3 +56,46 @@ class CatalogTests(unittest.TestCase):
         catalog.refresh([second, first])
 
         self.assertEqual(catalog.selected, first)
+
+    def test_a_held_session_is_listed_until_released_and_refreshed(self) -> None:
+        listed = session(terminal_id="a")
+        starting = session(terminal_id="b", status=SessionStatus.STARTING)
+        catalog = Catalog()
+        catalog.refresh([listed])
+
+        catalog.hold(starting)
+        self.assertEqual(catalog.sessions, (listed, starting))
+        catalog.refresh([listed])
+        self.assertEqual(catalog.sessions, (listed, starting))
+        catalog.release(starting)
+        self.assertEqual(catalog.sessions, (listed, starting))
+        catalog.refresh([listed])
+
+        self.assertEqual(catalog.sessions, (listed,))
+
+    def test_inventory_replaces_a_held_session_and_keeps_it_selected(self) -> None:
+        listed = session(terminal_id="a")
+        starting = session(terminal_id="b", status=SessionStatus.STARTING)
+        detected = replace(starting, status=SessionStatus.NEEDS_INPUT)
+        catalog = Catalog()
+        catalog.refresh([listed])
+        catalog.hold(starting)
+        catalog.select(starting)
+
+        catalog.refresh([listed, detected])
+        self.assertEqual(catalog.sessions, (detected, listed))
+        catalog.release(starting)
+        catalog.refresh([listed, detected])
+
+        self.assertEqual(catalog.sessions, (detected, listed))
+        self.assertEqual(catalog.selected, detected)
+
+    def test_select_ignores_a_session_the_catalog_does_not_list(self) -> None:
+        first, second = session(terminal_id="a"), session(terminal_id="b")
+        catalog = Catalog()
+        catalog.refresh([first, second])
+
+        catalog.select(second)
+        catalog.select(session(terminal_id="missing"))
+
+        self.assertEqual(catalog.selected, second)

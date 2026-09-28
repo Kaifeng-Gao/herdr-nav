@@ -325,15 +325,7 @@ class TerminalUI:
                 self._palette["muted"],
             )
         if self._draft is None:
-            status = snapshot.notice or snapshot.errors
-            status_style = (
-                self._palette["accent"]
-                if snapshot.notice
-                else self._palette["alert"]
-                if snapshot.errors
-                else self._palette["neutral"]
-            )
-            _text(self._screen, status_row, 2, status, status_style)
+            self._render_status(status_row, snapshot)
             help_text = (
                 "↑↓ select · → open (ctrl+b q returns) · tab new · r refresh · q quit"
             )
@@ -342,7 +334,19 @@ class TerminalUI:
             help_text = "enter start · esc cancel"
         _text(self._screen, help_row, 2, help_text, self._palette["muted"])
 
+    def _render_status(self, row: int, snapshot: DashboardSnapshot) -> None:
+        """Draw the notice, or else the errors, on row."""
+        style = (
+            self._palette["accent"]
+            if snapshot.notice
+            else self._palette["alert"]
+            if snapshot.errors
+            else self._palette["neutral"]
+        )
+        _text(self._screen, row, 2, snapshot.notice or snapshot.errors, style)
+
     def _render_draft(self, row: int, draft: str) -> None:
+        """Draw the command field with draft on row."""
         _, width = self._screen.getmaxyx()
         _text(self._screen, row, 2, _COMMAND_PROMPT, self._palette["accent"])
         start = 2 + len(_COMMAND_PROMPT)

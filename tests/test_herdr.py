@@ -273,17 +273,20 @@ class HerdrLaunchTests(unittest.TestCase):
         with self.assertRaisesRegex(HerdrError, "^the command exited before Herdr detected an agent$"):
             launcher(server).launch("claud")
 
-    def test_launch_gives_up_when_no_agent_is_detected(self, _sleep) -> None:
+    def test_launch_closes_the_tab_when_no_agent_is_detected(self, _sleep) -> None:
         server = FakeServer(
             pane_list=pane_list({"pane_id": "w1:p1", "workspace_id": "w1", "cwd": HERE}),
             layout_apply=new_tab(),
             pane_get=panes(STARTING_PANE),
+            pane_close=lambda _params: {},
         )
         with patch("herdrnav.herdr.time.monotonic", side_effect=[0.0, 31.0]):
             with self.assertRaisesRegex(
-                HerdrError, "the command is running in w1:p2, but Herdr has not detected an agent"
+                HerdrError, "^Herdr detected no agent within 30 seconds, so its tab was closed$"
             ):
                 launcher(server).launch("top")
+
+        self.assertEqual(server.params("pane.close"), {"pane_id": "w1:p2"})
 
 
 class HerdrRequestTests(unittest.TestCase):

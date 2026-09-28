@@ -210,7 +210,7 @@ class HerdrClient:
         working directory, in a workspace that already has a pane there, or in
         a new workspace. Blocks until Herdr detects an agent, and raises
         HerdrError if the command exits first or none is detected within 30
-        seconds.
+        seconds, in which case its tab is closed.
         """
         # Herdr reports resolved paths, such as /private/tmp for /tmp.
         folder = os.path.realpath(os.getcwd())
@@ -275,9 +275,9 @@ class HerdrClient:
             if _string(pane, "agent"):
                 return _session(pane, server)
             if time.monotonic() >= deadline:
+                self._request(server.socket_path, "pane.close", {"pane_id": pane_id})
                 raise HerdrError(
-                    f"the command is running in {pane_id}, but Herdr has not"
-                    " detected an agent there"
+                    "Herdr detected no agent within 30 seconds, so its tab was closed"
                 )
             time.sleep(_DETECTION_POLL_INTERVAL)
 

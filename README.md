@@ -50,9 +50,9 @@ If that agent is already open in another herdr-nav, jumping in takes it over.
 A new agent runs through your login shell in the directory you started
 herdr-nav from. It opens in a new tab of a Herdr workspace that already has a
 pane in that directory, or in a new workspace if none does. It appears once
-Herdr recognizes it as an agent, usually within a few seconds; a command that
-exits first, or that Herdr doesn't recognize within 30 seconds, is reported on
-the status line.
+Herdr recognizes it as an agent, usually within a few seconds. A command that
+exits first is reported on the status line; one that Herdr doesn't recognize
+within 30 seconds is closed and reported.
 
 ## Options
 

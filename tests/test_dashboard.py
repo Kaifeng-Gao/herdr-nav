@@ -157,6 +157,19 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(dashboard.snapshot.notice, "")
 
+    def test_progress_notices_last_until_their_refresh_finishes(self) -> None:
+        dashboard = Dashboard(UI(), Source(Inventory((), ())))
+        dashboard.handle(Redraw())
+        self.assertEqual(dashboard.snapshot.notice, "Connecting to Herdr…")
+        finish_refresh(dashboard)
+        self.assertEqual(dashboard.snapshot.notice, "")
+
+        dashboard.handle(Refresh())
+        dashboard.handle(Next())
+        self.assertEqual(dashboard.snapshot.notice, "Refreshing…")
+        finish_refresh(dashboard)
+        self.assertEqual(dashboard.snapshot.notice, "")
+
     def test_navigation_preserves_selection_after_inventory_reorders(self) -> None:
         first = session()
         second = session(terminal_id="terminal-b", pane_id="pane-b", title="Second")

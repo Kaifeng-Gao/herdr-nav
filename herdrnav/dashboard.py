@@ -150,10 +150,10 @@ class Dashboard:
         self.source = source
         self.catalog = Catalog()
         self.errors = ""
-        # Work in flight; cleared when a refresh finishes or by the next action.
-        self._progress = "Connecting to Herdr…"
         # Result of the operator's last request; cleared by the next action.
         self._outcome = ""
+        self._refreshed_once = False
+        self._refresh_requested = False
         self._poll_interval = poll_interval
         self._clock = clock
         self._next_poll = 0.0
@@ -163,13 +163,23 @@ class Dashboard:
     @property
     def snapshot(self) -> DashboardSnapshot:
         """Return the current state for presentation."""
-        starting = f"Starting {self._launch.command}…" if self._launch else ""
         return DashboardSnapshot(
             sessions=self.catalog.sessions,
             selected=self.catalog.selected,
-            notice=self._outcome or self._progress or starting,
+            notice=self._outcome or self._progress,
             errors=self.errors,
         )
+
+    @property
+    def _progress(self) -> str:
+        """Describe the work in flight, if any."""
+        if self._refresh_requested:
+            return "Refreshing…"
+        if self._launch is not None:
+            return f"Starting {self._launch.command}…"
+        if not self._refreshed_once:
+            return "Connecting to Herdr…"
+        return ""
 
     def tick(self) -> bool:
         """Apply completed inventory and report whether visible state changed."""
@@ -177,9 +187,10 @@ class Dashboard:
         if self._refresh is not None and self._refresh.done:
             refresh, self._refresh = self._refresh, None
             self._next_poll = self._clock() + self._poll_interval
-            if self._progress:
-                self._progress = ""
-                changed = True
+            progress = self._progress
+            self._refreshed_once = True
+            self._refresh_requested = False
+            changed = self._progress != progress
             changed |= self._apply_refresh(refresh)
         if self._launch is not None and self._launch.job.done:
             launch, self._launch = self._launch, None
@@ -212,7 +223,7 @@ class Dashboard:
 
     def handle(self, action: DashboardAction) -> bool:
         """Apply one semantic action and return whether the UI should continue."""
-        self._outcome = self._progress = ""
+        self._outcome = ""
         match action:
             case Quit():
                 return False
@@ -224,7 +235,7 @@ class Dashboard:
                 self.catalog.select_next(1)
             case Refresh():
                 self._next_poll = 0.0
-                self._progress = "Refreshing…"
+                self._refresh_requested = True
             case Open() if self.catalog.selected is not None:
                 self._open(self.catalog.selected)
         return True

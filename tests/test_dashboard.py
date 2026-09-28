@@ -100,7 +100,8 @@ class Source:
 
 
 def finish_refresh(dashboard: Dashboard) -> None:
-    dashboard.tick()
+    if dashboard._refresh is None:
+        dashboard.tick()
     refresh = dashboard._refresh
     if refresh is None:
         raise AssertionError("refresh did not start")
@@ -257,10 +258,7 @@ class DashboardLaunchTests(unittest.TestCase):
         source.launch_gate.set()
         finish_launch(dashboard)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
-        refresh = dashboard._refresh
-        assert refresh is not None
-        refresh.wait(timeout=1)
-        dashboard.tick()
+        finish_refresh(dashboard)
 
         self.assertEqual(source.launches, ["claude"])
         self.assertIn(source.launch_result, dashboard.snapshot.sessions)
@@ -274,10 +272,7 @@ class DashboardLaunchTests(unittest.TestCase):
 
         dashboard.handle(Launch("claud"))
         finish_launch(dashboard)
-        refresh = dashboard._refresh
-        assert refresh is not None
-        refresh.wait(timeout=1)
-        dashboard.tick()
+        finish_refresh(dashboard)
 
         self.assertEqual(
             dashboard.snapshot.notice,
@@ -303,10 +298,7 @@ class DashboardLaunchTests(unittest.TestCase):
         source.launch_gate.set()
         finish_launch(dashboard)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
-        refresh = dashboard._refresh
-        assert refresh is not None
-        refresh.wait(timeout=1)
-        dashboard.tick()
+        finish_refresh(dashboard)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
 
         dashboard.handle(Redraw())

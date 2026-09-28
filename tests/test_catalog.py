@@ -36,34 +36,23 @@ class CatalogTests(unittest.TestCase):
         catalog.refresh([changed, first])
         self.assertEqual(catalog.selected, changed)
 
-    def test_refresh_selects_first_when_selection_disappears(self) -> None:
-        first = session(terminal_id="first")
-        second = session(terminal_id="second")
-        catalog = Catalog()
-        catalog.refresh([first, second])
-        catalog.select_next(1)
-        catalog.refresh([first])
-        self.assertEqual(catalog.selected, first)
-
-    def test_remove_selects_the_row_that_takes_the_removed_place(self) -> None:
+    def test_refresh_selects_the_row_a_vanished_selection_left(self) -> None:
         first, second, third = (session(terminal_id=name) for name in "abc")
         catalog = Catalog()
         catalog.refresh([first, second, third])
         catalog.select_next(1)
 
-        catalog.remove(second)
+        catalog.refresh([first, third])
         self.assertEqual(catalog.selected, third)
-        catalog.remove(third)
+        catalog.refresh([first])
         self.assertEqual(catalog.selected, first)
-        catalog.remove(first)
+        catalog.refresh([])
         self.assertIsNone(catalog.selected)
 
-    def test_remove_keeps_the_selection_when_another_row_goes(self) -> None:
+    def test_refresh_selects_the_first_row_when_nothing_was_selected(self) -> None:
         first, second = session(terminal_id="a"), session(terminal_id="b")
         catalog = Catalog()
-        catalog.refresh([first, second])
 
-        catalog.remove(second)
-        catalog.remove(session(terminal_id="missing"))
+        catalog.refresh([second, first])
 
-        self.assertEqual((catalog.sessions, catalog.selected), ((first,), first))
+        self.assertEqual(catalog.selected, first)

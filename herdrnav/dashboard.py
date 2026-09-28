@@ -278,7 +278,6 @@ class Dashboard:
         except (HerdrError, OSError) as error:
             self._outcome = f"Could not close {session.pane_id}: {error}"
             return
-        self.catalog.remove(session)
         self._outcome = f"Closed {session.pane_id}"
         self._next_poll = 0.0
 

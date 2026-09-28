@@ -340,12 +340,13 @@ class DashboardCloseTests(unittest.TestCase):
         self.assertEqual(self.dashboard.snapshot.notice, "Press ctrl+x again to close pane-a")
 
         self.dashboard.handle(Close())
+        self.source.value = Inventory((self.second,), ())
+        finish_refresh(self.dashboard)
 
         self.assertEqual(self.source.closed, [self.first])
         self.assertEqual(self.dashboard.snapshot.sessions, (self.second,))
         self.assertEqual(self.dashboard.snapshot.selected, self.second)
         self.assertEqual(self.dashboard.snapshot.notice, "Closed pane-a")
-        self.assertEqual(self.dashboard._next_poll, 0.0)
 
     def test_any_other_action_cancels_a_pending_close(self) -> None:
         for action in (Redraw(), Next(), Launch("codex")):

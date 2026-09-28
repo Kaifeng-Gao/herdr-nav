@@ -210,7 +210,7 @@ class DashboardTests(unittest.TestCase):
 
 
 class DashboardLaunchTests(unittest.TestCase):
-    def test_launch_reports_then_selects_the_new_agent(self) -> None:
+    def test_launch_reports_the_new_agent_and_leaves_the_selection_alone(self) -> None:
         existing = session()
         source = Source(Inventory((existing,), ()))
         source.launch_gate.clear()
@@ -221,48 +221,19 @@ class DashboardLaunchTests(unittest.TestCase):
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
         dashboard.handle(DashboardAction.REDRAW)
         self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
+        source.value = Inventory((existing, source.launch_result), ())
         source.launch_gate.set()
         finish_launch(dashboard)
+        self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
+        refresh = dashboard._refresh
+        assert refresh is not None
+        refresh.wait(timeout=1)
+        dashboard.tick()
 
         self.assertEqual(source.launches, ["claude"])
         self.assertIn(source.launch_result, dashboard.snapshot.sessions)
-        self.assertEqual(dashboard.snapshot.selected, source.launch_result)
+        self.assertEqual(dashboard.snapshot.selected, existing)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
-
-    def test_launch_discards_inventory_that_was_loading_before_the_agent_existed(
-        self,
-    ) -> None:
-        existing = session()
-        release_stale_inventory = threading.Event()
-
-        class FirstInventorySlowSource(Source):
-            calls = 0
-
-            def inventory(self) -> Inventory:
-                reported = self.value
-                self.calls += 1
-                if self.calls == 1:
-                    release_stale_inventory.wait(2)
-                return reported
-
-        source = FirstInventorySlowSource(Inventory((existing,), ()))
-        dashboard = Dashboard(UI(), source)
-        dashboard.catalog.refresh([existing])
-        dashboard.tick()
-        stale_refresh = dashboard._refresh
-
-        dashboard.handle(Launch("claude"))
-        source.value = Inventory((existing, source.launch_result), ())
-        finish_launch(dashboard)
-        fresh_refresh = dashboard._refresh
-        release_stale_inventory.set()
-        for refresh in (stale_refresh, fresh_refresh):
-            assert refresh is not None
-            refresh.wait(timeout=1)
-        dashboard.tick()
-
-        self.assertIsNot(fresh_refresh, stale_refresh)
-        self.assertEqual(dashboard.snapshot.selected, source.launch_result)
 
     def test_launch_failure_is_shown_until_the_next_action(self) -> None:
         source = Source(Inventory((), ()))

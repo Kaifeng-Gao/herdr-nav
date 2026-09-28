@@ -151,7 +151,6 @@ class Dashboard:
                 self.notice = ""
                 changed = True
             changed |= self._apply_refresh(refresh)
-        # After refresh, so inventory that predates the launch can't hide the agent.
         if self._launch is not None and self._launch.job.done:
             launch, self._launch = self._launch, None
             self._finish_launch(launch)
@@ -179,11 +178,7 @@ class Dashboard:
         except (HerdrError, OSError) as error:
             self.notice = f"Could not start {launch.command}: {error}"
             return
-        self.catalog.add(session)
-        self.catalog.select(session)
         self.notice = f"Started {launch.command} in {session.pane_id}"
-        # Inventory already in flight predates the new agent.
-        self._refresh = None
         self._next_poll = 0.0
 
     def handle(self, action: DashboardAction | Launch) -> bool:

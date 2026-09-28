@@ -57,7 +57,7 @@ class Source:
         self.value = inventory
         self.attach_error = attach_error
         self.attached: list[Session] = []
-        self.launches: list[tuple[str, Session | None]] = []
+        self.launches: list[str] = []
         self.launch_result: Session | Exception = session(
             terminal_id="terminal-new", pane_id="pane-new", agent="claude"
         )
@@ -72,8 +72,8 @@ class Source:
         if self.attach_error is not None:
             raise self.attach_error
 
-    def launch(self, command: str, beside: Session | None) -> Session:
-        self.launches.append((command, beside))
+    def launch(self, command: str) -> Session:
+        self.launches.append(command)
         self.launch_gate.wait(2)
         if isinstance(self.launch_result, Exception):
             raise self.launch_result
@@ -210,7 +210,7 @@ class DashboardTests(unittest.TestCase):
 
 
 class DashboardLaunchTests(unittest.TestCase):
-    def test_launch_starts_beside_the_selection_then_selects_the_new_agent(self) -> None:
+    def test_launch_reports_then_selects_the_new_agent(self) -> None:
         existing = session()
         source = Source(Inventory((existing,), ()))
         source.launch_gate.clear()
@@ -224,7 +224,7 @@ class DashboardLaunchTests(unittest.TestCase):
         source.launch_gate.set()
         finish_launch(dashboard)
 
-        self.assertEqual(source.launches, [("claude", existing)])
+        self.assertEqual(source.launches, ["claude"])
         self.assertIn(source.launch_result, dashboard.snapshot.sessions)
         self.assertEqual(dashboard.snapshot.selected, source.launch_result)
         self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
@@ -280,7 +280,7 @@ class DashboardLaunchTests(unittest.TestCase):
             dashboard.snapshot.notice,
             "Could not start claud: the command exited before Herdr detected an agent",
         )
-        self.assertEqual(source.launches, [("claud", None)])
+        self.assertEqual(source.launches, ["claud"])
         dashboard.handle(DashboardAction.REDRAW)
         self.assertEqual(dashboard.snapshot.notice, "")
 
@@ -295,4 +295,4 @@ class DashboardLaunchTests(unittest.TestCase):
         self.assertEqual(dashboard.snapshot.notice, "Wait for claude to start")
         source.launch_gate.set()
         finish_launch(dashboard)
-        self.assertEqual([command for command, _ in source.launches], ["claude"])
+        self.assertEqual(source.launches, ["claude"])

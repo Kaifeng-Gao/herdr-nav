@@ -177,25 +177,43 @@ class HerdrAttachTests(unittest.TestCase):
             client.attach(SESSION)
 
 
+def pane_list(*records: dict[str, object]) -> Callable[[dict[str, object]], dict[str, object]]:
+    return lambda _params: {"panes": list(records)}
+
+
+def launcher(server: FakeServer) -> HerdrClient:
+    return HerdrClient(
+        "herdr", run_command=lambda _command: completed(ONE_SERVER), request=server
+    )
+
+
+HERE = os.path.realpath(os.getcwd())
+
+
 @patch.dict(os.environ, {"HERDR_SOCKET_PATH": "", "SHELL": "/bin/zsh"})
 @patch("herdrnav.herdr.time.sleep")
 class HerdrLaunchTests(unittest.TestCase):
-    def test_launch_beside_a_session_runs_the_command_in_its_workspace(self, _sleep) -> None:
+    def test_launch_joins_the_workspace_with_a_pane_in_this_folder(self, _sleep) -> None:
         server = FakeServer(
-            layout_apply=new_tab(), pane_get=panes(STARTING_PANE, DETECTED_PANE)
+            pane_list=pane_list(
+                {"pane_id": "w1:p1", "workspace_id": "w1", "cwd": "/elsewhere"},
+                {"pane_id": "w2:p1", "workspace_id": "w2", "cwd": HERE},
+            ),
+            layout_apply=new_tab(),
+            pane_get=panes(STARTING_PANE, DETECTED_PANE),
         )
 
-        launched = HerdrClient("herdr", request=server).launch("claude --resume", SESSION)
+        launched = launcher(server).launch("claude --resume")
 
         self.assertEqual(
             server.params("layout.apply"),
             {
-                "workspace_id": "workspace",
+                "workspace_id": "w2",
                 "focus": False,
                 "tab_label": "claude --resume",
                 "root": {
                     "type": "pane",
-                    "cwd": os.getcwd(),
+                    "cwd": HERE,
                     "command": ["/bin/zsh", "-lic", "claude --resume"],
                 },
             },
@@ -204,33 +222,37 @@ class HerdrLaunchTests(unittest.TestCase):
         self.assertEqual(launched.identity, ("/work.sock", "term-new"))
         self.assertEqual((launched.agent, launched.status), ("claude", SessionStatus.NEEDS_INPUT))
 
-    def test_launch_without_a_selection_joins_the_first_workspace(self, _sleep) -> None:
-        server = FakeServer(
-            workspace_list=lambda _params: {"workspaces": [{"workspace_id": "w3"}]},
-            layout_apply=new_tab(),
-            pane_get=panes(DETECTED_PANE),
-        )
+    def test_launch_matches_the_folder_through_symlinks(self, _sleep) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = os.path.join(directory, "repo")
+            link = os.path.join(directory, "link")
+            os.mkdir(folder)
+            os.symlink(folder, link)
+            resolved = os.path.realpath(folder)
+            server = FakeServer(
+                pane_list=pane_list({"pane_id": "w3:p1", "workspace_id": "w3", "cwd": resolved}),
+                layout_apply=new_tab(),
+                pane_get=panes(DETECTED_PANE),
+            )
 
-        HerdrClient(
-            "herdr", run_command=lambda _command: completed(ONE_SERVER), request=server
-        ).launch("codex", None)
+            with patch("herdrnav.herdr.os.getcwd", return_value=link):
+                launcher(server).launch("codex")
 
         self.assertEqual(server.params("layout.apply")["workspace_id"], "w3")
+        self.assertEqual(server.params("layout.apply")["root"]["cwd"], resolved)
 
-    def test_launch_on_an_empty_server_replaces_the_new_workspace_shell(self, _sleep) -> None:
+    def test_launch_creates_a_workspace_when_no_pane_is_in_this_folder(self, _sleep) -> None:
         server = FakeServer(
-            workspace_list=lambda _params: {"workspaces": []},
-            workspace_create=lambda _params: {"tab": {"tab_id": "w1:t1"}},
+            pane_list=pane_list({"pane_id": "w1:p1", "workspace_id": "w1", "cwd": "/elsewhere"}),
+            workspace_create=lambda _params: {"tab": {"tab_id": "w2:t1"}},
             layout_apply=new_tab(),
             pane_get=panes(DETECTED_PANE),
         )
 
-        HerdrClient(
-            "herdr", run_command=lambda _command: completed(ONE_SERVER), request=server
-        ).launch("codex", None)
+        launcher(server).launch("codex")
 
-        self.assertEqual(server.params("workspace.create"), {"cwd": os.getcwd(), "focus": False})
-        self.assertEqual(server.params("layout.apply")["tab_id"], "w1:t1")
+        self.assertEqual(server.params("workspace.create"), {"cwd": HERE, "focus": False})
+        self.assertEqual(server.params("layout.apply")["tab_id"], "w2:t1")
         self.assertNotIn("workspace_id", server.params("layout.apply"))
 
     def test_launch_requires_a_running_server(self, _sleep) -> None:
@@ -238,25 +260,30 @@ class HerdrLaunchTests(unittest.TestCase):
             "herdr", run_command=lambda _command: completed('{"sessions": []}')
         )
         with self.assertRaisesRegex(HerdrError, "No Herdr server is running"):
-            client.launch("codex", None)
+            client.launch("codex")
 
     def test_launch_reports_a_command_that_exits_before_detection(self, _sleep) -> None:
         server = FakeServer(
+            pane_list=pane_list({"pane_id": "w1:p1", "workspace_id": "w1", "cwd": HERE}),
             layout_apply=new_tab(),
             pane_get=panes(
                 STARTING_PANE, HerdrError("pane w1:p2 not found", "pane_not_found")
             ),
         )
         with self.assertRaisesRegex(HerdrError, "^the command exited before Herdr detected an agent$"):
-            HerdrClient("herdr", request=server).launch("claud", SESSION)
+            launcher(server).launch("claud")
 
     def test_launch_gives_up_when_no_agent_is_detected(self, _sleep) -> None:
-        server = FakeServer(layout_apply=new_tab(), pane_get=panes(STARTING_PANE))
+        server = FakeServer(
+            pane_list=pane_list({"pane_id": "w1:p1", "workspace_id": "w1", "cwd": HERE}),
+            layout_apply=new_tab(),
+            pane_get=panes(STARTING_PANE),
+        )
         with patch("herdrnav.herdr.time.monotonic", side_effect=[0.0, 31.0]):
             with self.assertRaisesRegex(
                 HerdrError, "the command is running in w1:p2, but Herdr has not detected an agent"
             ):
-                HerdrClient("herdr", request=server).launch("top", SESSION)
+                launcher(server).launch("top")
 
 
 class HerdrRequestTests(unittest.TestCase):

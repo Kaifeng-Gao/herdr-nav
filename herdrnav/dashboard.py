@@ -61,7 +61,7 @@ class SessionSource(Protocol):
 
     def attach(self, session: Session) -> None: ...
 
-    def launch(self, command: str, beside: Session | None) -> Session: ...
+    def launch(self, command: str) -> Session: ...
 
 
 _Result = TypeVar("_Result")
@@ -210,8 +210,7 @@ class Dashboard:
         if self._launch is not None:
             self.notice = f"Wait for {self._launch.command} to start"
             return
-        beside = self.catalog.selected
-        job = _Job(lambda: self.source.launch(command, beside), "herdr-nav-launch")
+        job = _Job(lambda: self.source.launch(command), "herdr-nav-launch")
         self._launch = _PendingLaunch(command, job)
 
     def _open(self, session: Session) -> None:

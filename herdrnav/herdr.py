@@ -203,15 +203,18 @@ class HerdrClient:
         if completed.returncode:
             raise HerdrError(completed.stderr or "Herdr attach failed")
 
-    def launch(self, command: str, beside: Session | None) -> Session:
+    def launch(self, command: str) -> Session:
         """Start command in a new Herdr tab and return it once it is an agent.
 
         The command runs through the operator's login shell in this process's
-        working directory, on beside's server and workspace when given. Blocks
-        until Herdr detects an agent, and raises HerdrError if the command
-        exits first or none is detected within 30 seconds.
+        working directory, in a workspace that already has a pane there, or in
+        a new workspace. Blocks until Herdr detects an agent, and raises
+        HerdrError if the command exits first or none is detected within 30
+        seconds.
         """
-        server, placement = self._placement(beside)
+        # Herdr reports resolved paths, such as /private/tmp for /tmp.
+        folder = os.path.realpath(os.getcwd())
+        server, placement = self._placement(folder)
         shell = os.environ.get("SHELL") or "/bin/sh"
         result = self._request(
             server.socket_path,
@@ -222,7 +225,7 @@ class HerdrClient:
                 "tab_label": command,
                 "root": {
                     "type": "pane",
-                    "cwd": os.getcwd(),
+                    "cwd": folder,
                     # Interactive login, so the operator's PATH and aliases apply.
                     "command": [shell, "-lic", command],
                 },
@@ -235,23 +238,22 @@ class HerdrClient:
             raise HerdrError("layout.apply response is missing the new pane")
         return self._detected_agent(server, pane_id)
 
-    def _placement(self, beside: Session | None) -> tuple[_Server, JsonObject]:
-        """Return the server and layout.apply target that a new tab joins."""
-        if beside is not None:
-            server = _Server(beside.server_name, beside.socket_path)
-            return server, {"workspace_id": beside.workspace_id}
+    def _placement(self, folder: str) -> tuple[_Server, JsonObject]:
+        """Return the server and layout.apply target for a new tab in folder.
+
+        Creates a workspace in folder when no pane on the server is there.
+        """
         servers = self._servers()
         if not servers:
             raise HerdrError("No Herdr server is running")
         server = servers[0]
-        workspaces = self._request(server.socket_path, "workspace.list", {}).get(
-            "workspaces"
-        )
-        if isinstance(workspaces, list) and workspaces and isinstance(workspaces[0], dict):
-            return server, {"workspace_id": _string(workspaces[0], "workspace_id")}
+        panes = self._request(server.socket_path, "pane.list", {}).get("panes")
+        for pane in panes if isinstance(panes, list) else ():
+            if isinstance(pane, dict) and _string(pane, "cwd") == folder:
+                return server, {"workspace_id": _string(pane, "workspace_id")}
         # A new workspace opens with a shell tab; the agent replaces that shell.
         created = self._request(
-            server.socket_path, "workspace.create", {"cwd": os.getcwd(), "focus": False}
+            server.socket_path, "workspace.create", {"cwd": folder, "focus": False}
         ).get("tab")
         tab_id = _string(created, "tab_id") if isinstance(created, dict) else ""
         if not tab_id:

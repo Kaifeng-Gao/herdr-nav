@@ -44,3 +44,26 @@ class CatalogTests(unittest.TestCase):
         catalog.select_next(1)
         catalog.refresh([first])
         self.assertEqual(catalog.selected, first)
+
+    def test_remove_selects_the_row_that_takes_the_removed_place(self) -> None:
+        first, second, third = (session(terminal_id=name) for name in "abc")
+        catalog = Catalog()
+        catalog.refresh([first, second, third])
+        catalog.select_next(1)
+
+        catalog.remove(second)
+        self.assertEqual(catalog.selected, third)
+        catalog.remove(third)
+        self.assertEqual(catalog.selected, first)
+        catalog.remove(first)
+        self.assertIsNone(catalog.selected)
+
+    def test_remove_keeps_the_selection_when_another_row_goes(self) -> None:
+        first, second = session(terminal_id="a"), session(terminal_id="b")
+        catalog = Catalog()
+        catalog.refresh([first, second])
+
+        catalog.remove(second)
+        catalog.remove(session(terminal_id="missing"))
+
+        self.assertEqual((catalog.sessions, catalog.selected), ((first,), first))

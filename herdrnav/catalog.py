@@ -56,6 +56,20 @@ class Catalog:
         if self._selected is None or self.selected is None:
             self._selected = self._sessions[0].identity if self._sessions else None
 
+    def remove(self, session: Session) -> None:
+        """Stop listing session; if it was selected, select the row that replaces it."""
+        identities = [listed.identity for listed in self._sessions]
+        if session.identity not in identities:
+            return
+        index = identities.index(session.identity)
+        del self._sessions[index]
+        if self._selected == session.identity:
+            self._selected = (
+                self._sessions[min(index, len(self._sessions) - 1)].identity
+                if self._sessions
+                else None
+            )
+
     def select_next(self, offset: int) -> Session | None:
         """Move selection cyclically by offset and return the newly selected session."""
         if not self._sessions:

@@ -266,6 +266,31 @@ class DashboardLaunchTests(unittest.TestCase):
         dashboard.handle(Redraw())
         self.assertEqual(dashboard.snapshot.notice, "")
 
+    def test_overlapping_refresh_and_launch_notices_keep_their_lifetimes(self) -> None:
+        source = Source(Inventory((), ()))
+        source.launch_gate.clear()
+        dashboard = Dashboard(UI(), source)
+        finish_refresh(dashboard)
+
+        dashboard.handle(Launch("claude"))
+        dashboard.handle(Refresh())
+        self.assertEqual(dashboard.snapshot.notice, "Refreshing…")
+        finish_refresh(dashboard)
+        self.assertEqual(dashboard.snapshot.notice, "Starting claude…")
+
+        dashboard.handle(Refresh())
+        source.launch_gate.set()
+        finish_launch(dashboard)
+        self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
+        refresh = dashboard._refresh
+        assert refresh is not None
+        refresh.wait(timeout=1)
+        dashboard.tick()
+        self.assertEqual(dashboard.snapshot.notice, "Started claude in pane-new")
+
+        dashboard.handle(Redraw())
+        self.assertEqual(dashboard.snapshot.notice, "")
+
     def test_a_second_launch_waits_for_the_first(self) -> None:
         source = Source(Inventory((), ()))
         source.launch_gate.clear()

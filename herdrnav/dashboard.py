@@ -149,9 +149,11 @@ class Dashboard:
         self.ui = ui
         self.source = source
         self.catalog = Catalog()
-        self.notice = "Connecting to Herdr…"
         self.errors = ""
-        self._notice_clears_on_refresh = True
+        # Work in flight; cleared when a refresh finishes or by the next action.
+        self._progress = "Connecting to Herdr…"
+        # Result of the operator's last request; cleared by the next action.
+        self._outcome = ""
         self._poll_interval = poll_interval
         self._clock = clock
         self._next_poll = 0.0
@@ -165,7 +167,7 @@ class Dashboard:
         return DashboardSnapshot(
             sessions=self.catalog.sessions,
             selected=self.catalog.selected,
-            notice=self.notice or starting,
+            notice=self._outcome or self._progress or starting,
             errors=self.errors,
         )
 
@@ -175,8 +177,8 @@ class Dashboard:
         if self._refresh is not None and self._refresh.done:
             refresh, self._refresh = self._refresh, None
             self._next_poll = self._clock() + self._poll_interval
-            if self._notice_clears_on_refresh and self.notice:
-                self.notice = ""
+            if self._progress:
+                self._progress = ""
                 changed = True
             changed |= self._apply_refresh(refresh)
         if self._launch is not None and self._launch.job.done:
@@ -200,19 +202,17 @@ class Dashboard:
         return self.catalog.sessions != previous_sessions or self.errors != previous_errors
 
     def _finish_launch(self, launch: _PendingLaunch) -> None:
-        self._notice_clears_on_refresh = False
         try:
             session = launch.job.result()
         except (HerdrError, OSError) as error:
-            self.notice = f"Could not start {launch.command}: {error}"
+            self._outcome = f"Could not start {launch.command}: {error}"
             return
-        self.notice = f"Started {launch.command} in {session.pane_id}"
+        self._outcome = f"Started {launch.command} in {session.pane_id}"
         self._next_poll = 0.0
 
     def handle(self, action: DashboardAction) -> bool:
         """Apply one semantic action and return whether the UI should continue."""
-        self.notice = ""
-        self._notice_clears_on_refresh = False
+        self._outcome = self._progress = ""
         match action:
             case Quit():
                 return False
@@ -224,15 +224,14 @@ class Dashboard:
                 self.catalog.select_next(1)
             case Refresh():
                 self._next_poll = 0.0
-                self.notice = "Refreshing…"
-                self._notice_clears_on_refresh = True
+                self._progress = "Refreshing…"
             case Open() if self.catalog.selected is not None:
                 self._open(self.catalog.selected)
         return True
 
     def _start_launch(self, command: str) -> None:
         if self._launch is not None:
-            self.notice = f"Wait for {self._launch.command} to start"
+            self._outcome = f"Wait for {self._launch.command} to start"
             return
         job = _Job(lambda: self.source.launch(command), "herdr-nav-launch")
         self._launch = _PendingLaunch(command, job)
@@ -242,7 +241,7 @@ class Dashboard:
             with self.ui.suspended():
                 self.source.attach(session)
         except (HerdrError, OSError) as error:
-            self.notice = f"Could not open {session.pane_id}: {error}"
+            self._outcome = f"Could not open {session.pane_id}: {error}"
         self._next_poll = 0.0
 
     def run(self) -> None:

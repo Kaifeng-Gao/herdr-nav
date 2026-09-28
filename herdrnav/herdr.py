@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .contracts import Inventory, Session, SessionStatus
@@ -209,14 +209,13 @@ class HerdrClient:
         self._require_current(session)
         self._request(session.socket_path, "pane.close", {"pane_id": session.pane_id})
 
-    def launch(self, command: str) -> Session:
-        """Start command in a new Herdr tab and return it once it is an agent.
+    def start(self, command: str) -> Session:
+        """Start command in a new Herdr tab and return its session.
 
         The command runs through the operator's login shell in this process's
         working directory, in a workspace that already has a pane there, or in
-        a new workspace. Blocks until Herdr detects an agent, and raises
-        HerdrError if the command exits first or none is detected within 30
-        seconds, in which case its tab is closed.
+        a new workspace. Herdr has not detected an agent in it yet, so the
+        session has status STARTING and command as its title.
         """
         # Herdr reports resolved paths, such as /private/tmp for /tmp.
         folder = os.path.realpath(os.getcwd())
@@ -242,7 +241,38 @@ class HerdrClient:
         pane_id = _string(root, "pane_id") if isinstance(root, dict) else ""
         if not pane_id:
             raise HerdrError("layout.apply response is missing the new pane")
-        return self._detected_agent(server, pane_id)
+        # layout.apply doesn't report the terminal, which identifies the session.
+        pane = self._pane(server.socket_path, pane_id)
+        return replace(
+            _session(pane, server), status=SessionStatus.STARTING, title=command
+        )
+
+    def wait_for_agent(self, session: Session) -> None:
+        """Block until Herdr detects an agent in session's pane.
+
+        Raises HerdrError if the command exits first, or if no agent is
+        detected within 30 seconds, in which case its tab is closed.
+        """
+        deadline = time.monotonic() + _DETECTION_TIMEOUT
+        while True:
+            try:
+                pane = self._pane(session.socket_path, session.pane_id)
+            except HerdrError as error:
+                if error.code == "pane_not_found":
+                    raise HerdrError(
+                        "the command exited before Herdr detected an agent"
+                    ) from error
+                raise
+            if _string(pane, "agent"):
+                return
+            if time.monotonic() >= deadline:
+                self._request(
+                    session.socket_path, "pane.close", {"pane_id": session.pane_id}
+                )
+                raise HerdrError(
+                    "Herdr detected no agent within 30 seconds, so its tab was closed"
+                )
+            time.sleep(_DETECTION_POLL_INTERVAL)
 
     def _placement(self, folder: str) -> tuple[_Server, JsonObject]:
         """Return the server and layout.apply target for a new tab in folder.
@@ -265,27 +295,6 @@ class HerdrClient:
         if not tab_id:
             raise HerdrError("workspace.create response is missing its tab")
         return server, {"tab_id": tab_id}
-
-    def _detected_agent(self, server: _Server, pane_id: str) -> Session:
-        """Poll the new pane until Herdr reports an agent in it."""
-        deadline = time.monotonic() + _DETECTION_TIMEOUT
-        while True:
-            try:
-                pane = self._pane(server.socket_path, pane_id)
-            except HerdrError as error:
-                if error.code == "pane_not_found":
-                    raise HerdrError(
-                        "the command exited before Herdr detected an agent"
-                    ) from error
-                raise
-            if _string(pane, "agent"):
-                return _session(pane, server)
-            if time.monotonic() >= deadline:
-                self._request(server.socket_path, "pane.close", {"pane_id": pane_id})
-                raise HerdrError(
-                    "Herdr detected no agent within 30 seconds, so its tab was closed"
-                )
-            time.sleep(_DETECTION_POLL_INTERVAL)
 
     def _require_current(self, session: Session) -> None:
         """Raise unless the session's pane still shows the terminal listed for it."""
